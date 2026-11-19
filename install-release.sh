@@ -3,7 +3,7 @@ set -euo pipefail
 
 TARGET="0fariid0/netmerge"
 URL="https://github.com/$TARGET.git"
-TAG="v0.6.0"
+TAG="v0.6.1"
 VERSION="${TAG#v}"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$HOME/github-projects/netmerge}"
@@ -84,6 +84,7 @@ else
   while IFS= read -r -d '' item; do
     cp -a -- "$item" "$REPO/"
   done < <(find "$SOURCE" -mindepth 1 -maxdepth 1 ! -name .git -print0)
+  git rm --ignore-unmatch -- internal/dashboard/window_windows.go
   git add --all
   if ! git diff --cached --quiet; then
     account_id="$(gh api --hostname github.com user --jq .id)"

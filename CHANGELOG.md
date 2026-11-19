@@ -5,6 +5,10 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-20
+
+- Remove the retired dashboard file so Windows builds use the new dashboard.
+
 ## [0.6.0] - 2026-11-20
 
 - Replaced the Windows dashboard backend with a native Windows Forms window. Launch failures now show an error instead of silently closing.

@@ -19,11 +19,11 @@ The upstream MIT license and third-party notices are included.
 Each flow stays on its selected link. A multi-connection downloader can use both links. Packet-level bonding for a
 single connection requires a remote peer. Use the tray's adapter caps if saturating a link increases game latency.
 
-## Publish v0.6.0
+## Publish v0.6.1
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 0.6.0` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 0.6.1` with PowerShell.
