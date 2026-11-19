@@ -15,14 +15,20 @@ type linkQuality struct {
 	rtt, jitter, base time.Duration
 	failure           float64
 	sampled           bool
+	last              time.Duration
+	lastOK            bool
+	failStreak        int
 }
 
 func (q *linkQuality) update(rtt time.Duration, ok bool) {
+	q.last, q.lastOK = rtt, ok
 	q.failure *= 0.8
 	if !ok {
 		q.failure += 0.2
+		q.failStreak++
 		return
 	}
+	q.failStreak = 0
 	if !q.sampled {
 		q.rtt, q.base, q.sampled = rtt, rtt, true
 		return
@@ -65,6 +71,10 @@ func (s *Scheduler) SetDistribution(mode string) {
 	if s.roundRobin != roundRobin {
 		s.next = [2]uint64{}
 	}
+	if game != s.game {
+		s.lastGameRoute = GameRoute{}
+		s.genericPreference = [2]routePreference{}
+	}
 	s.roundRobin, s.game = roundRobin, game
 	if !game {
 		for _, sl := range s.slots {
@@ -85,39 +95,64 @@ func (s *Scheduler) updateGameCaps(sl *Slot, now time.Time, sec float64) {
 	if !s.game || !sl.present || !recentGame(sl, now) {
 		sl.gameCap.Store(nil)
 		sl.gameRiseAt = now.Add(3 * time.Second)
+		sl.gameClean = 0
+		sl.gameProbe = sl.probeSequence
 		for i, rate := range rates {
 			sl.gamePeak[i] = max(rate, sl.gamePeak[i]*math.Exp(-sec/60))
 		}
 		return
 	}
-	loaded := false
+	var inflated bool
 	for f, q := range sl.quality {
-		loaded = loaded || (sl.state[f] == stateUp && q.sampled && q.rtt-q.base > max(20*time.Millisecond, q.base/3))
+		inflated = inflated || (sl.state[f] == stateUp && q.sampled && q.lastOK &&
+			q.last-q.base > max(20*time.Millisecond, q.base/3))
 	}
-	factor := gameReserve
-	if loaded {
-		factor = 0.65
+	seq := sl.probeSequence
+	fresh := false
+	for f, q := range sl.quality {
+		fresh = fresh || (seq[f] != sl.gameProbe[f] && q.lastOK && sl.state[f] == stateUp)
+	}
+	sl.gameProbe = seq
+	if fresh {
+		if inflated {
+			sl.gameClean = 0
+		} else {
+			sl.gameClean++
+		}
 	}
 	old := sl.gameCap.Load()
-	tryRaise := !loaded && old != nil && !now.Before(sl.gameRiseAt)
-	if tryRaise {
+	previous := [2]float64{}
+	if old != nil {
+		previous = [2]float64{old.inMbps, old.outMbps}
+	}
+	caps := previous
+	pressure := [2]float64{}
+	for i, rate := range rates {
+		sl.gamePeak[i] = max(rate, sl.gamePeak[i])
+		if caps[i] == 0 && sl.gamePeak[i] >= 25_000 {
+			caps[i] = sl.gamePeak[i] * gameReserve / bytesPerMbit
+		}
+		if caps[i] > 0 {
+			pressure[i] = rate / (caps[i] * bytesPerMbit)
+		}
+	}
+	for i, cap := range caps {
+		if cap == 0 {
+			continue
+		}
+		// RTT is shared, so use observed traffic to attribute pressure to a direction.
+		if fresh && inflated && pressure[i] >= max(0.2, pressure[1-i]*0.5) {
+			cap = min(cap*0.8, rates[i]*0.90/bytesPerMbit)
+		} else if fresh && !inflated && sl.gameClean >= 3 && pressure[i] >= 0.90 &&
+			(previous[i] > 0 && now.After(sl.gameRiseAt)) {
+			cap = max(cap*1.05, cap+0.1)
+		}
+		caps[i] = math.Max(0.1, math.Floor(cap*10)/10)
+	}
+	if fresh && !inflated && sl.gameClean >= 3 && now.After(sl.gameRiseAt) {
 		sl.gameRiseAt = now.Add(3 * time.Second)
 	}
-	caps := [2]float64{}
-	for i, rate := range rates {
-		// Do not turn a paced sample into a new lower capacity estimate.
-		sl.gamePeak[i] = max(rate, sl.gamePeak[i])
-		if tryRaise {
-			previous := [2]float64{old.inMbps, old.outMbps}
-			if previous[i] > 0 && rate >= 0.92*previous[i]*bytesPerMbit {
-				sl.gamePeak[i] *= 1.05
-			}
-		}
-		if sl.gamePeak[i] >= 25_000 {
-			// Round to avoid replacing token buckets on every tick.
-			caps[i] = math.Max(0.1, math.Floor(sl.gamePeak[i]*factor/bytesPerMbit*10)/10)
-		}
-	}
+
 	if old != nil && old.inMbps == caps[0] && old.outMbps == caps[1] {
 		return
 	}
@@ -131,6 +166,12 @@ func (s *Scheduler) updateGameCaps(sl *Slot, now time.Time, sec float64) {
 	}
 	if caps[1] > 0 {
 		p.out = newBucket(caps[1] * bytesPerMbit)
+	}
+	if old != nil && old.inMbps == p.inMbps {
+		p.in = old.in
+	}
+	if old != nil && old.outMbps == p.outMbps {
+		p.out = old.out
 	}
 	sl.gameCap.Store(p)
 }

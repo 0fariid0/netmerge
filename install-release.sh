@@ -3,7 +3,7 @@ set -euo pipefail
 
 TARGET="0fariid0/netmerge"
 URL="https://github.com/$TARGET.git"
-TAG="v0.8.0"
+TAG="v0.9.0"
 VERSION="${TAG#v}"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$HOME/github-projects/netmerge}"

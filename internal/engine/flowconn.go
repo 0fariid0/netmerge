@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 
 	"net-merge/internal/nics"
@@ -105,16 +106,20 @@ func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
 // ListenUDP opens a UDP socket pinned to one NIC (a UDP "flow" = the socket, so every datagram
 // of that flow leaves the same way). UDP flows are short and numerous (DNS), so they don't hold
 // a balancing slot: the pick still spreads them via the scheduler's tie-breaking.
-func (b *Balancer) ListenUDP(ctx context.Context, f Family, dstPort uint16) (net.PacketConn, error) {
+func (b *Balancer) ListenUDP(ctx context.Context, f Family, dstPort uint16, dst netip.Addr) (net.PacketConn, error) {
 	network := "udp4"
 	if f == Fam6 {
 		network = "udp6"
 	}
 	latencySensitive := IsLatencySensitiveUDP(dstPort)
+	dst = dst.Unmap()
+	if latencySensitive {
+		b.S.prepareDestination(ctx, f, dst)
+	}
 	tried := map[string]struct{}{}
 	lastErr := errors.New("no usable network adapter")
 	for {
-		sl := b.S.acquireFor(f, tried, latencySensitive)
+		sl := b.S.acquireDestination(f, tried, latencySensitive, dst)
 		if sl == nil {
 			return nil, lastErr
 		}

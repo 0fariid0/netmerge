@@ -3,6 +3,7 @@
 package tray
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -67,6 +68,12 @@ type trayUI struct {
 	header, toggleItem, v6Item, autoItem, signInItem *systray.MenuItem
 	versionItem                                      *systray.MenuItem
 	rows                                             []*systray.MenuItem
+	linkDetails                                      [trayRows]*systray.MenuItem
+	lastDetails                                      [trayRows]string
+	routeLine                                        *systray.MenuItem
+	totalLine                                        *systray.MenuItem
+	lastRouteText                                    string
+	lastTotalText                                    string
 	lastOn                                           *bool
 	lastHeader                                       string
 	lastTip                                          string
@@ -83,6 +90,11 @@ func (u *trayUI) onReady() {
 	systray.SetTooltip("net-merge")
 	u.header = systray.AddMenuItem("net-merge", "")
 	u.header.Disable()
+	u.totalLine = systray.AddMenuItem("Traffic", "")
+	u.totalLine.Disable()
+	u.routeLine = systray.AddMenuItem("Game route", "")
+	u.routeLine.Disable()
+	u.routeLine.Hide()
 	type menuLabel struct {
 		item    *systray.MenuItem
 		english string
@@ -112,6 +124,8 @@ func (u *trayUI) onReady() {
 		for _, mbitPerSec := range limitPresets {
 			u.limitPreset[i] = append(u.limitPreset[i], addLimit(mbitPerSec, limitText(mbitPerSec)))
 		}
+		u.linkDetails[i] = r.AddSubMenuItem("Link statistics", "")
+		u.linkDetails[i].Disable()
 		// Add the children while the row is still in the menu: on Windows a hidden item is
 		// removed from the menu, so converting it to a submenu afterwards fails and only the
 		// entries added later (when they are first checked) would appear.
@@ -149,9 +163,55 @@ func (u *trayUI) onReady() {
 	localize(u.signInItem, "Start at sign-in", "شروع با ورود به ویندوز")
 	localize(quit, "Quit", "خروج")
 	localize(language, "فارسی", "English")
+	tools := systray.AddMenuItem("Diagnostics", "")
+	loadTest := tools.AddSubMenuItem("Test links under load", "Uses up to 36 MiB per adapter")
+	openTest := tools.AddSubMenuItem("Open last load test", "")
+	record := tools.AddSubMenuItem("Start / stop match recording", "")
+	openRecord := tools.AddSubMenuItem("Open match comparison", "")
+	localize(tools, "Diagnostics", "آزمایش و گزارش")
+	localize(loadTest, "Test links under load (up to 36 MiB per link)", "تست لینک زیر بار (تا ۳۶ مگابایت برای هر لینک)")
+	localize(openTest, "Open last load test", "مشاهدهٔ آخرین تست لینک")
+	localize(record, "Start / stop match recording", "شروع یا پایان ثبت مچ")
+	localize(openRecord, "Open match comparison", "مشاهدهٔ مقایسهٔ مچ")
 	go u.watchUpdates()
 
 	go func() {
+		var active *matchRecord
+		var testDone <-chan error
+		var cancelTest context.CancelFunc
+		defer func() {
+			if cancelTest != nil {
+				cancelTest()
+			}
+		}()
+		reports := map[string]string{}
+		for _, mode := range []string{"smart", "round-robin", "game"} {
+			if data, err := os.ReadFile(filepath.Join(u.stateDir, "match-"+mode+".txt")); err == nil {
+				reports[mode] = string(data)
+			}
+		}
+		finishRecord := func() {
+			if active == nil {
+				return
+			}
+			reports[active.mode] = active.text(time.Now())
+			if err := os.WriteFile(filepath.Join(u.stateDir, "match-"+active.mode+".txt"), []byte(reports[active.mode]), 0o600); err != nil {
+				u.lastErr = err.Error()
+			}
+			var combined strings.Builder
+			combined.WriteString("NetMerge match comparison\nMeasurements are public probe RTT, not the game's telemetry. Test the same game region and similar network load.\n")
+			for _, mode := range []string{"smart", "round-robin", "game"} {
+				if report, ok := reports[mode]; ok {
+					combined.WriteString("\n" + report + "\n")
+				}
+			}
+			if err := os.WriteFile(filepath.Join(u.stateDir, gameReportFile), []byte(combined.String()), 0o600); err != nil {
+				u.lastErr = err.Error()
+			}
+			active = nil
+			u.sched.SetRecording(false)
+			record.Uncheck()
+		}
 		u.ap.start(u.startOn)
 		switch {
 		case !u.startOn:
@@ -169,6 +229,42 @@ func (u *trayUI) onReady() {
 		for {
 			u.refresh()
 			select {
+			case <-loadTest.ClickedCh:
+				if testDone != nil {
+					break
+				}
+				u.lastErr = ""
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				cancelTest = cancel
+				done := make(chan error, 1)
+				testDone = done
+				loadTest.Disable()
+				go func() {
+					defer cancel()
+					results := u.sched.TestUnderLoad(ctx)
+					done <- os.WriteFile(filepath.Join(u.stateDir, loadTestFile), []byte(loadTestText(results)), 0o600)
+				}()
+			case err := <-testDone:
+				testDone = nil
+				cancelTest = nil
+				loadTest.Enable()
+				if err != nil {
+					u.lastErr = err.Error()
+				} else {
+					u.openDiagnostics(loadTestFile)
+				}
+			case <-openTest.ClickedCh:
+				u.openDiagnostics(loadTestFile)
+			case <-record.ClickedCh:
+				if active != nil {
+					finishRecord()
+					break
+				}
+				active = &matchRecord{start: time.Now(), mode: u.mode, links: map[string]*matchLink{}, routes: map[string]int{}}
+				u.sched.SetRecording(true)
+				record.Check()
+			case <-openRecord.ClickedCh:
+				u.openDiagnostics(gameReportFile)
 			case <-language.ClickedCh:
 				pref := u.text("fa", "en")
 				if err := os.WriteFile(u.languagePath, []byte(pref), 0o600); err != nil {
@@ -190,11 +286,20 @@ func (u *trayUI) onReady() {
 				}
 				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
 			case <-smart.ClickedCh:
-				setMode("smart")
+				if u.mode != "smart" {
+					finishRecord()
+					setMode("smart")
+				}
 			case <-roundRobin.ClickedCh:
-				setMode("round-robin")
+				if u.mode != "round-robin" {
+					finishRecord()
+					setMode("round-robin")
+				}
 			case <-game.ClickedCh:
-				setMode("game")
+				if u.mode != "game" {
+					finishRecord()
+					setMode("game")
+				}
 			case <-u.signInItem.ClickedCh:
 				on := !u.signInItem.Checked()
 				u.lastErr = ""
@@ -225,14 +330,23 @@ func (u *trayUI) onReady() {
 					u.applyLimit(u.rowNames[c.row], c.mbitPerSec)
 				}
 			case <-quit.ClickedCh:
+				finishRecord()
 				systray.Quit()
 				return
-			case <-tick.C:
+			case now := <-tick.C:
+				if active != nil {
+					if now.Sub(active.start) >= maxGameRecord {
+						finishRecord()
+					} else {
+						active.sample(u.sched.Snapshot(), u.sched.LatestGameRoute())
+					}
+				}
 				if req, ok := state.TakeLimit(u.stateDir); ok { // `net-merge limit ...` from a terminal
 					u.applyLimit(req.Adapter, req.Mbps)
 				}
 				switch { // `net-merge on|off|quit` from a terminal
 				case state.TakeMarker(u.stateDir, "quit"):
+					finishRecord()
 					systray.Quit()
 					return
 				case state.TakeMarker(u.stateDir, "off"):
@@ -348,7 +462,30 @@ func (u *trayUI) refresh() {
 	if u.lastErr != "" {
 		u.setHeader("Error: " + shorten(u.lastErr, 70))
 	} else {
-		u.setHeader(fmt.Sprintf(u.text("%s  ·  Total ↓%s ↑%s Mbps", "%s  ·  مجموع ↓%s ↑%s Mbps"), state, mbps(down), mbps(up)))
+		u.setHeader(state)
+	}
+	total := u.text("Total", "مجموع") + "  |  " + ltr(speedText(down, up))
+	if total != u.lastTotalText {
+		u.totalLine.SetTitle(total)
+		u.lastTotalText = total
+	}
+	route := u.sched.LatestGameRoute()
+	routeText := ""
+	if on && u.mode == "game" && !route.At.IsZero() && time.Since(route.At) <= 30*time.Minute {
+		basis := u.text("general probe", "سنجش عمومی")
+		if route.Basis == "destination" {
+			basis = u.text("game destination", "مقصد بازی")
+		}
+		routeText = u.text("Game", "مسیر بازی") + "  |  " + ltr(route.Adapter) + "  |  " + basis
+	}
+	if routeText != u.lastRouteText {
+		if routeText == "" {
+			u.routeLine.Hide()
+		} else {
+			u.routeLine.SetTitle(routeText)
+			u.routeLine.Show()
+		}
+		u.lastRouteText = routeText
 	}
 
 	for i, r := range u.rows {
@@ -362,30 +499,31 @@ func (u *trayUI) refresh() {
 		}
 		s := live[i]
 		u.rowNames[i] = s.Name
-		txt := fmt.Sprintf("%s:  ↓%s ↑%s Mbps", s.Name, mbps(s.LinkIn), mbps(s.LinkOut))
-		if s.LimitMbps > 0 {
-			txt += "  limit " + limitText(s.LimitMbps)
-		}
-		if on {
-			txt += fmt.Sprintf(u.text("  (%d flows via net-merge)", "  (%d اتصال فعال)"), s.Active)
-		}
-		if s.State != "up" && s.State6 != "up" { // neither family verified yet, or no internet
-			txt += "  - " + s.State
-		}
-		if s.ProbeRTT > 0 {
-			txt += fmt.Sprintf(u.text("  RTT %d ms · jitter %d", "  تأخیر %dms · نوسان %d"), s.ProbeRTT.Milliseconds(), s.ProbeJitter.Milliseconds())
-		}
-		if s.ProbeFail >= 0.05 {
-			txt += fmt.Sprintf(u.text("  probe errors %.0f%%", "  خطای سنجش %.0f٪"), 100*s.ProbeFail)
-		}
-		if on && s.GameActive {
-			txt += u.text("  [game UDP]", "  [بازی]")
-			if s.GameDownMbps > 0 || s.GameUpMbps > 0 {
-				txt += fmt.Sprintf(u.text("  auto ↓%.1f ↑%.1f", "  سقف خودکار ↓%.1f ↑%.1f"), s.GameDownMbps, s.GameUpMbps)
+		txt := ltr(shorten(s.Name, 32)) + "  |  " + ltr(speedText(s.LinkIn, s.LinkOut))
+		status := u.text("Online", "وصل")
+		if s.State != "up" && s.State6 != "up" {
+			status = u.text("Checking", "در حال سنجش")
+			if s.State == "no internet" || s.State6 == "no internet" {
+				status = u.text("Offline", "قطع")
 			}
 		}
-		if s.State6 == "up" {
-			txt += "  +IPv6"
+		details := []string{status}
+		if s.ProbeRTT > 0 {
+			details = append(details, ltr(fmt.Sprintf("RTT %d ms / Jitter %d ms", s.ProbeRTT.Milliseconds(), s.ProbeJitter.Milliseconds())))
+		}
+		if s.ProbeFail >= 0.05 {
+			details = append(details, u.text("Probe errors", "خطای سنجش")+" "+ltr(fmt.Sprintf("%.0f%%", 100*s.ProbeFail)))
+		}
+		if s.GameDownMbps > 0 || s.GameUpMbps > 0 {
+			details = append(details, u.text("Automatic cap", "سقف خودکار")+" "+ltr(fmt.Sprintf("↓%.1f ↑%.1f Mbps", s.GameDownMbps, s.GameUpMbps)))
+		}
+		if s.LimitMbps > 0 {
+			details = append(details, u.text("Manual cap", "سقف دستی")+" "+ltr(limitText(s.LimitMbps)))
+		}
+		detail := strings.Join(details, "  |  ")
+		if detail != u.lastDetails[i] {
+			u.linkDetails[i].SetTitle(detail)
+			u.lastDetails[i] = detail
 		}
 		if txt != u.lastRows[i] {
 			r.SetTitle(txt)
@@ -401,6 +539,16 @@ func (u *trayUI) refresh() {
 		systray.SetTooltip(tip)
 		u.lastTip = tip
 	}
+}
+
+func ltr(value string) string {
+	// Explicit direction prevents Windows from moving units and arrow/number pairs
+	// when an adapter name and a Persian label appear in the same native menu row.
+	return "\u200e\u202a" + strings.ReplaceAll(value, "&", "&&") + "\u202c\u200e"
+}
+
+func speedText(down, up float64) string {
+	return fmt.Sprintf("↓%s  ↑%s Mbps", mbps(down), mbps(up))
 }
 
 // Windows 11 shows only the first 64 characters of a tray tooltip (measured: the text stopped mid-

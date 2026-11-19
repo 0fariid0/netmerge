@@ -5,6 +5,14 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-20
+
+- Directional, load-aware game caps recover progressively after stable probe samples.
+- Game routing measures the actual UDP destination where comparable ICMP samples exist and shows the probe source in the tray.
+- New flows wait for repeated improvements before switching the preferred link. Existing flows stay pinned.
+- Added per-adapter under-load testing and before/after match recordings.
+- Shortened native tray rows and separated Persian titles from speed units and detailed diagnostics.
+
 ## [0.8.0] - 2026-11-20
 
 - Added Game mode for low-latency UDP routing and automatic headroom for downloads sharing a game link.

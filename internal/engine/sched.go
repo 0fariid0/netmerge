@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,8 +56,11 @@ type Slot struct {
 
 	// guarded by Scheduler.mu
 	quality         [2]linkQuality
+	probeSequence   [2]uint64
 	gamePeak        [2]float64
 	gameRiseAt      time.Time
+	gameProbe       [2]uint64
+	gameClean       int
 	gameLastBytes   [2]int64
 	weight          [2]float64
 	present         bool
@@ -135,6 +139,10 @@ type SlotStats struct {
 	LinkIn, LinkOut          float64 // through the adapter by any app, from the OS's counters (bytes/s)
 	Peak, Peak6              float64
 	ProbeRTT, ProbeJitter    time.Duration
+	ProbeLast                time.Duration
+	ProbeSequence            uint64
+	ProbeFamily              Family
+	ProbeOK                  bool
 	ProbeFail                float64
 	GameActive               bool
 	GameDownMbps, GameUpMbps float64
@@ -145,14 +153,20 @@ type SlotStats struct {
 // discounts idle TCP sockets; static mode
 // retains weighted least-open-flows. Data transfer accounting stays lock-free.
 type Scheduler struct {
-	mu         sync.Mutex
-	slots      []*Slot
-	auto       bool
-	roundRobin bool
-	game       bool
-	next       [2]uint64
-	limits     map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
-	now        func() time.Time
+	mu                 sync.Mutex
+	slots              []*Slot
+	auto               bool
+	roundRobin         bool
+	destinations       map[netip.Addr]*destinationRoute
+	destinationBatches int
+	genericPreference  [2]routePreference
+	probeRevision      [2]uint64
+	lastGameRoute      GameRoute
+	recording          bool
+	game               bool
+	next               [2]uint64
+	limits             map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
+	now                func() time.Time
 }
 
 func NewScheduler(nics []nics.Nic) *Scheduler {
@@ -416,6 +430,10 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 }
 
 func (s *Scheduler) acquireFor(f Family, skip map[string]struct{}, latencySensitive bool) *Slot {
+	return s.acquireDestination(f, skip, latencySensitive, netip.Addr{})
+}
+
+func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, latencySensitive bool, dst netip.Addr) *Slot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -451,12 +469,34 @@ func (s *Scheduler) acquireFor(f Family, skip map[string]struct{}, latencySensit
 	}
 	var best *Slot
 	if s.game && latencySensitive {
-		best = pool[0]
-		for _, sl := range pool[1:] {
-			if sl.quality[f].score() < best.quality[f].score() {
-				best = sl
+		basis := "general"
+		if r := s.destinations[dst]; r != nil && !r.updated.IsZero() && now.Sub(r.updated) <= 20*time.Second {
+			score := func(sl *Slot) float64 {
+				q := r.quality[sl.key]
+				if !q.ip.Equal(sl.ip(f)) || q.failStreak >= 2 {
+					return math.Inf(1)
+				}
+				return q.score()
+			}
+			comparable := 0
+			for _, sl := range pool {
+				if !math.IsInf(score(sl), 1) {
+					comparable++
+				}
+			}
+			if comparable >= 2 {
+				best = chooseStable(pool, &r.preference, r.revision, score)
+				basis = "destination"
 			}
 		}
+		if best == nil {
+			pref := &s.genericPreference[f]
+			if len(skip) > 0 {
+				pref = &routePreference{}
+			}
+			best = chooseStable(pool, pref, s.probeRevision[f], func(sl *Slot) float64 { return sl.quality[f].score() })
+		}
+		s.lastGameRoute = GameRoute{Adapter: best.Name, Basis: basis, Destination: dst, At: now}
 	} else if s.roundRobin {
 		best = pool[s.next[f]%uint64(len(pool))]
 		// A retry must not consume a new connection's turn.
@@ -569,11 +609,13 @@ func (s *Scheduler) Snapshot() []SlotStats {
 			Peak: sl.peak[Fam4], Peak6: sl.peak[Fam6],
 			LimitMbps: sl.limitMbps(),
 		}
-		q := sl.quality[Fam4]
+		probeFamily := Fam4
 		if a.ip4 == nil || (sl.state[Fam4] != stateUp && sl.state[Fam6] == stateUp) {
-			q = sl.quality[Fam6]
+			probeFamily = Fam6
 		}
+		q := sl.quality[probeFamily]
 		st.ProbeRTT, st.ProbeJitter, st.ProbeFail = q.rtt, q.jitter, q.failure
+		st.ProbeLast, st.ProbeOK, st.ProbeSequence, st.ProbeFamily = q.last, q.lastOK, sl.probeSequence[probeFamily], probeFamily
 		st.GameActive = s.game && recentGame(sl, s.now())
 		if cap := sl.gameCap.Load(); cap != nil {
 			st.GameDownMbps, st.GameUpMbps = cap.inMbps, cap.outMbps
