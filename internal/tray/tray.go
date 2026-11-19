@@ -27,11 +27,11 @@ const trayRows = 4 // adapters shown in the menu; extra rows stay hidden
 
 // Run shows the tray icon and blocks until Quit, and closes ready once the icon exists. With
 // startOn it merges as soon as it can (at once, or, with autoPause, once two connections work).
-func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, version string, startOn, autoPause, roundRobin bool, ready chan struct{}) {
+func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, version string, startOn, autoPause bool, mode string, ready chan struct{}) {
 	ui := &trayUI{tun: t, sched: sched, bal: bal, stateDir: stateDir, version: version, startOn: startOn,
 		iconOn: icon.Tray(true), iconOff: icon.Tray(false), ready: ready}
 	ui.ap.enabled = autoPause
-	ui.roundRobin = roundRobin
+	ui.mode = mode
 	ui.languagePath = filepath.Join(stateDir, "ui-language")
 	if pref, err := os.ReadFile(ui.languagePath); err == nil {
 		ui.persian = strings.TrimSpace(string(pref)) == "fa"
@@ -50,7 +50,7 @@ type trayUI struct {
 	stateDir     string
 	version      string
 	startOn      bool
-	roundRobin   bool
+	mode         string
 	persian      bool
 	languagePath string
 	iconOn       []byte
@@ -121,10 +121,20 @@ func (u *trayUI) onReady() {
 	u.v6Item = systray.AddMenuItemCheckbox("Use all adapters (IPv6 only if every adapter has it)", "Ticked: apps are pushed to IPv4 so every adapter is used. Unticked: IPv6 is allowed and funnels onto the adapters that have it.", u.bal.V6Mode() == engine.V6Auto)
 	u.autoItem = systray.AddMenuItemCheckbox("Pause when there is only one connection", "Pauses merging by itself when fewer than two connections have internet, and starts it again when a second one works. Pausing or starting by hand always wins.", u.ap.enabled)
 	distribution := systray.AddMenuItem("Connection distribution", "Applies to new TCP and UDP flows")
-	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", !u.roundRobin)
-	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.roundRobin)
-	bond := distribution.AddSubMenuItem("Single connection (relay required)", "")
-	bond.Disable()
+	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", u.mode == "smart")
+	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.mode == "round-robin")
+	game := distribution.AddSubMenuItemCheckbox("Game mode", "Low-latency UDP path and automatic headroom for bulk traffic", u.mode == "game")
+	setMode := func(mode string) {
+		u.mode = mode
+		u.sched.SetDistribution(mode)
+		for name, item := range map[string]*systray.MenuItem{"smart": smart, "round-robin": roundRobin, "game": game} {
+			if name == mode {
+				item.Check()
+			} else {
+				item.Uncheck()
+			}
+		}
+	}
 	u.signInItem = systray.AddMenuItemCheckbox("Start at sign-in", "Starts net-merge when you sign in, with no password or admin prompt.", platform.AutostartEnabled())
 	u.toggleItem = systray.AddMenuItem("Start merging", "")
 	u.versionItem = systray.AddMenuItem(versionLabel(u.version), "The version of net-merge that is running (the same as net-merge version). Click to open the release page on GitHub.")
@@ -135,7 +145,7 @@ func (u *trayUI) onReady() {
 	localize(distribution, "Connection distribution", "حالت توزیع اتصال")
 	localize(smart, "Smart (weighted)", "هوشمند (وزنی)")
 	localize(roundRobin, "Round robin", "نوبتی")
-	localize(bond, "Single connection (relay required)", "ادغام یک اتصال (نیازمند سرور واسط)")
+	localize(game, "Game mode", "حالت بازی")
 	localize(u.signInItem, "Start at sign-in", "شروع با ورود به ویندوز")
 	localize(quit, "Quit", "خروج")
 	localize(language, "فارسی", "English")
@@ -180,13 +190,11 @@ func (u *trayUI) onReady() {
 				}
 				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
 			case <-smart.ClickedCh:
-				u.sched.SetRoundRobin(false)
-				smart.Check()
-				roundRobin.Uncheck()
+				setMode("smart")
 			case <-roundRobin.ClickedCh:
-				u.sched.SetRoundRobin(true)
-				roundRobin.Check()
-				smart.Uncheck()
+				setMode("round-robin")
+			case <-game.ClickedCh:
+				setMode("game")
 			case <-u.signInItem.ClickedCh:
 				on := !u.signInItem.Checked()
 				u.lastErr = ""
@@ -363,6 +371,18 @@ func (u *trayUI) refresh() {
 		}
 		if s.State != "up" && s.State6 != "up" { // neither family verified yet, or no internet
 			txt += "  - " + s.State
+		}
+		if s.ProbeRTT > 0 {
+			txt += fmt.Sprintf(u.text("  RTT %d ms · jitter %d", "  تأخیر %dms · نوسان %d"), s.ProbeRTT.Milliseconds(), s.ProbeJitter.Milliseconds())
+		}
+		if s.ProbeFail >= 0.05 {
+			txt += fmt.Sprintf(u.text("  probe errors %.0f%%", "  خطای سنجش %.0f٪"), 100*s.ProbeFail)
+		}
+		if on && s.GameActive {
+			txt += u.text("  [game UDP]", "  [بازی]")
+			if s.GameDownMbps > 0 || s.GameUpMbps > 0 {
+				txt += fmt.Sprintf(u.text("  auto ↓%.1f ↑%.1f", "  سقف خودکار ↓%.1f ↑%.1f"), s.GameDownMbps, s.GameUpMbps)
+			}
 		}
 		if s.State6 == "up" {
 			txt += "  +IPv6"

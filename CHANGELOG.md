@@ -5,6 +5,12 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
+- Added Game mode for low-latency UDP routing and automatic headroom for downloads sharing a game link.
+- Added adapter RTT, jitter, and probe failure information to the tray.
+- Smart distribution now also considers observed link utilization. Removed the unused single-connection option.
+
 ## [0.7.0] - 2026-11-20
 
 - Restored the standard Windows tray menu and removed the separate dashboard.

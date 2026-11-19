@@ -76,7 +76,7 @@ func (c *common) register(fs *flag.FlagSet) {
 	fs.Var(c.weights, "weight", `fixed adapter weight, repeatable: -weight "Wi-Fi=3"`)
 	fs.DurationVar(&c.rescan, "rescan", 3*time.Second, "adapter re-scan interval")
 	fs.DurationVar(&c.stats, "stats", 5*time.Second, "stats print interval (0 = off)")
-	fs.StringVar(&c.distribution, "distribution", "smart", "smart: weighted balancing; round-robin: alternate new flows")
+	fs.StringVar(&c.distribution, "distribution", "smart", "smart: weighted balancing; round-robin: alternate new flows; game: prefer low-latency UDP")
 	fs.BoolVar(&c.auto, "auto-weight", true, "weight adapters by measured throughput (off when -weight is given)")
 	fs.StringVar(&c.ipv6, "ipv6", "auto", "auto: IPv6 only if every adapter has it (else apps use IPv4 on all adapters); on: always; off: never")
 	fs.IntVar(&c.mtu, "mtu", tun.DefaultMTU, "MTU of the virtual adapter (1280-65535); larger means fewer packets and less CPU")
@@ -123,8 +123,8 @@ func (c *common) boot(mode func() string) (*engine.Scheduler, *engine.Balancer, 
 	if c.rescan <= 0 {
 		return nil, nil, fmt.Errorf("-rescan must be positive")
 	}
-	if c.distribution != "smart" && c.distribution != "round-robin" {
-		return nil, nil, fmt.Errorf("-distribution must be smart or round-robin, got %q", c.distribution)
+	if c.distribution != "smart" && c.distribution != "round-robin" && c.distribution != "game" {
+		return nil, nil, fmt.Errorf("-distribution must be smart, round-robin or game, got %q", c.distribution)
 	}
 	if c.mtu < 1280 || c.mtu > 65535 {
 		return nil, nil, fmt.Errorf("-mtu must be between 1280 and 65535, got %d", c.mtu)
@@ -143,7 +143,7 @@ func (c *common) boot(mode func() string) (*engine.Scheduler, *engine.Balancer, 
 	}
 	sched := engine.NewScheduler(nics)
 	sched.SetAuto(c.auto && len(c.weights) == 0)
-	sched.SetRoundRobin(c.distribution == "round-robin")
+	sched.SetDistribution(c.distribution)
 	if limits, err := state.LoadLimits(c.stateDir); err != nil {
 		logx.Printf("warning: %v (ignored)\n", err) // a bad limits file must not stop merging
 	} else {

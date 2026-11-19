@@ -20,9 +20,13 @@ const (
 )
 
 func probe(sl *Slot, f Family) bool {
-	ip := sl.ip(f)
+	_, ok := measureProbe(sl, f, sl.ip(f))
+	return ok
+}
+
+func measureProbe(sl *Slot, f Family, ip net.IP) (time.Duration, bool) {
 	if ip == nil {
-		return false
+		return 0, false
 	}
 	network := "tcp4"
 	if f == Fam6 {
@@ -30,17 +34,19 @@ func probe(sl *Slot, f Family) bool {
 	}
 	for _, t := range probeTargets[f] {
 		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}, Control: nics.ForceEgress(sl.Index, f == Fam6), Timeout: probeTimeout}
+		start := time.Now()
 		if c, err := d.Dial(network, t); err == nil {
 			c.Close()
-			return true
+			return max(time.Since(start), time.Microsecond), true
 		}
 	}
-	return false
+	return 0, false
 }
 
 type probeJob struct {
 	sl *Slot
 	f  Family
+	ip net.IP
 }
 
 // RunProbes checks every adapter's internet access per address family: new ones immediately,
@@ -59,7 +65,18 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		for _, j := range s.probeDue() {
 			go func() {
 				defer j.sl.probing[j.f].Store(false)
-				s.SetState(j.sl, j.f, probe(j.sl, j.f))
+				rtt, ok := measureProbe(j.sl, j.f, j.ip)
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if !j.ip.Equal(j.sl.ip(j.f)) {
+					return
+				}
+				j.sl.quality[j.f].update(rtt, ok)
+				if ok {
+					j.sl.state[j.f], j.sl.downUntil[j.f] = stateUp, time.Time{}
+				} else {
+					j.sl.state[j.f] = stateDown
+				}
 			}()
 		}
 	}
@@ -80,6 +97,9 @@ func (s *Scheduler) probeDue() []probeJob {
 				continue
 			}
 			every := probeEveryUp
+			if s.game {
+				every = 3 * time.Second
+			}
 			switch sl.state[f] {
 			case stateUnknown:
 				every = 0
@@ -89,7 +109,7 @@ func (s *Scheduler) probeDue() []probeJob {
 			if now.Sub(sl.lastProbe[f]) >= every {
 				sl.lastProbe[f] = now
 				sl.probing[f].Store(true)
-				due = append(due, probeJob{sl, f})
+				due = append(due, probeJob{sl, f, sl.ip(f)})
 			}
 		}
 	}

@@ -48,9 +48,16 @@ type Slot struct {
 	actF                  [2]atomic.Int64
 	bytesIn, bytesOut     [2]atomic.Int64
 	probing               [2]atomic.Bool
+	lastGame              atomic.Int64
+	gameBytes             [2]atomic.Int64
+	gameCap               atomic.Pointer[gameLimit]
 	limit                 atomic.Pointer[limitPair] // nil = unlimited; see limit.go
 
 	// guarded by Scheduler.mu
+	quality         [2]linkQuality
+	gamePeak        [2]float64
+	gameRiseAt      time.Time
+	gameLastBytes   [2]int64
 	weight          [2]float64
 	present         bool
 	state           [2]linkState
@@ -114,20 +121,24 @@ func (sl *Slot) ip(f Family) net.IP {
 }
 
 type SlotStats struct {
-	Name              string
-	IP                string
-	IP6               string
-	State             string // IPv4 probe state, "-" if the adapter has no IPv4
-	State6            string
-	Weight, Weight6   float64
-	Present           bool
-	Active, Total     int64
-	Failed            int64
-	BytesIn, BytesOut int64
-	RateIn, RateOut   float64 // through net-merge, both families summed (bytes/s)
-	LinkIn, LinkOut   float64 // through the adapter by any app, from the OS's counters (bytes/s)
-	Peak, Peak6       float64
-	LimitMbps         float64 // cap in Mbit/s, 0 = unlimited
+	Name                     string
+	IP                       string
+	IP6                      string
+	State                    string // IPv4 probe state, "-" if the adapter has no IPv4
+	State6                   string
+	Weight, Weight6          float64
+	Present                  bool
+	Active, Total            int64
+	Failed                   int64
+	BytesIn, BytesOut        int64
+	RateIn, RateOut          float64 // through net-merge, both families summed (bytes/s)
+	LinkIn, LinkOut          float64 // through the adapter by any app, from the OS's counters (bytes/s)
+	Peak, Peak6              float64
+	ProbeRTT, ProbeJitter    time.Duration
+	ProbeFail                float64
+	GameActive               bool
+	GameDownMbps, GameUpMbps float64
+	LimitMbps                float64 // cap in Mbit/s, 0 = unlimited
 }
 
 // Scheduler uses weighted least-busy-flows per address family. Automatic mode
@@ -138,6 +149,7 @@ type Scheduler struct {
 	slots      []*Slot
 	auto       bool
 	roundRobin bool
+	game       bool
 	next       [2]uint64
 	limits     map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
 	now        func() time.Time
@@ -151,11 +163,10 @@ func NewScheduler(nics []nics.Nic) *Scheduler {
 
 // SetRoundRobin changes adapter selection for new flows only.
 func (s *Scheduler) SetRoundRobin(on bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.roundRobin != on {
-		s.next = [2]uint64{}
-		s.roundRobin = on
+	if on {
+		s.SetDistribution("round-robin")
+	} else {
+		s.SetDistribution("smart")
 	}
 }
 
@@ -260,6 +271,7 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 			}
 			if changed {
 				found.state[f] = stateUnknown
+				found.quality[f] = linkQuality{}
 				found.lastProbe[f], found.downUntil[f] = time.Time{}, time.Time{}
 				found.peak[f] = 0
 				if s.auto {
@@ -389,6 +401,9 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			}
 		}
 	}
+	for _, sl := range s.slots {
+		s.updateGameCaps(sl, s.now(), sec)
+	}
 }
 
 // Acquire picks an IPv4 NIC for a new flow, skipping the ones in skip. The caller must Release it.
@@ -397,6 +412,10 @@ func (s *Scheduler) Release(sl *Slot)                       { s.ReleaseFor(sl, F
 
 // AcquireFor picks a NIC that has an address of the given family.
 func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
+	return s.acquireFor(f, skip, false)
+}
+
+func (s *Scheduler) acquireFor(f Family, skip map[string]struct{}, latencySensitive bool) *Slot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -431,7 +450,14 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 		return nil
 	}
 	var best *Slot
-	if s.roundRobin {
+	if s.game && latencySensitive {
+		best = pool[0]
+		for _, sl := range pool[1:] {
+			if sl.quality[f].score() < best.quality[f].score() {
+				best = sl
+			}
+		}
+	} else if s.roundRobin {
 		best = pool[s.next[f]%uint64(len(pool))]
 		// A retry must not consume a new connection's turn.
 		if len(skip) == 0 {
@@ -448,7 +474,15 @@ func (s *Scheduler) AcquireFor(f Family, skip map[string]struct{}) *Slot {
 			if s.auto {
 				load = sl.busy(f)
 			}
-			if score := float64(load+1) / sl.weight[f]; score < bestScore {
+			score := float64(load+1) / sl.weight[f]
+			if s.auto && sl.peak[f] >= minMeasuredPeak {
+				busyShare := min(1, (sl.rateIn[f]+sl.rateOut[f])/sl.peak[f])
+				score *= 1 + busyShare
+			}
+			if s.game && recentGame(sl, now) {
+				score *= 8
+			}
+			if score < bestScore {
 				best, bestScore = sl, score
 			}
 		}
@@ -534,6 +568,15 @@ func (s *Scheduler) Snapshot() []SlotStats {
 			LinkIn: sl.linkRateIn, LinkOut: sl.linkRateOut,
 			Peak: sl.peak[Fam4], Peak6: sl.peak[Fam6],
 			LimitMbps: sl.limitMbps(),
+		}
+		q := sl.quality[Fam4]
+		if a.ip4 == nil || (sl.state[Fam4] != stateUp && sl.state[Fam6] == stateUp) {
+			q = sl.quality[Fam6]
+		}
+		st.ProbeRTT, st.ProbeJitter, st.ProbeFail = q.rtt, q.jitter, q.failure
+		st.GameActive = s.game && recentGame(sl, s.now())
+		if cap := sl.gameCap.Load(); cap != nil {
+			st.GameDownMbps, st.GameUpMbps = cap.inMbps, cap.outMbps
 		}
 		if a.ip4 != nil {
 			st.IP, st.State = a.ip4.String(), sl.state[Fam4].String()

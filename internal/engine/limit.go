@@ -162,14 +162,15 @@ func (sl *Slot) throttlePacket(down bool, n int) {
 // writePaced waits for the adapter's tokens and writes p in chunks while doing so, so a large
 // buffer is delivered smoothly instead of in one burst at the end of the wait.
 func (sl *Slot) writePaced(dst io.Writer, p []byte, down bool) (int, error) {
-	pair := sl.limit.Load()
-	if pair == nil {
+	chunk := sl.bulkChunk(down)
+	if chunk == 0 {
 		return dst.Write(p)
 	}
 	written := 0
 	for len(p) > 0 {
-		k := min(len(p), pair.chunk)
+		k := min(len(p), chunk)
 		sl.throttle(down, k)
+		sl.paceBulk(down, k)
 		n, err := dst.Write(p[:k])
 		written += n
 		if err != nil {

@@ -21,8 +21,8 @@ type slotConn struct {
 }
 
 func (c *slotConn) Read(p []byte) (int, error) {
-	if pair := c.sl.limit.Load(); pair != nil && len(p) > pair.chunk {
-		p = p[:pair.chunk] // hand out a chunk at a time, so a limited flow stays smooth
+	if chunk := c.sl.bulkChunk(true); chunk > 0 && len(p) > chunk {
+		p = p[:chunk] // hand out a chunk at a time, so a limited flow stays smooth
 	}
 	n, err := c.TCPConn.Read(p)
 	if n > 0 {
@@ -31,6 +31,7 @@ func (c *slotConn) Read(p []byte) (int, error) {
 			c.activity.bytes.Add(int64(n))
 		}
 		c.sl.throttle(true, n)
+		c.sl.paceBulk(true, n)
 	}
 	return n, err
 }
@@ -69,22 +70,34 @@ func (b *Balancer) DialPinned(ctx context.Context, host string, port int) (net.C
 
 type slotPacketConn struct {
 	net.PacketConn
-	sl  *Slot
-	fam Family
+	sl               *Slot
+	fam              Family
+	latencySensitive bool
 }
 
 func (c *slotPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	n, a, err := c.PacketConn.ReadFrom(p)
 	if n > 0 {
 		c.sl.bytesIn[c.fam].Add(int64(n))
+		if c.latencySensitive {
+			c.sl.noteGame(true, n)
+		} else {
+			c.sl.paceBulk(true, n)
+		}
 		c.sl.throttlePacket(true, n)
 	}
 	return n, a, err
 }
 
 func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
+	if !c.latencySensitive {
+		c.sl.paceBulk(false, len(p))
+	}
 	c.sl.throttlePacket(false, len(p))
 	n, err := c.PacketConn.WriteTo(p, a)
+	if c.latencySensitive {
+		c.sl.noteGame(false, n)
+	}
 	c.sl.bytesOut[c.fam].Add(int64(n))
 	return n, err
 }
@@ -92,15 +105,16 @@ func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
 // ListenUDP opens a UDP socket pinned to one NIC (a UDP "flow" = the socket, so every datagram
 // of that flow leaves the same way). UDP flows are short and numerous (DNS), so they don't hold
 // a balancing slot: the pick still spreads them via the scheduler's tie-breaking.
-func (b *Balancer) ListenUDP(ctx context.Context, f Family) (net.PacketConn, error) {
+func (b *Balancer) ListenUDP(ctx context.Context, f Family, dstPort uint16) (net.PacketConn, error) {
 	network := "udp4"
 	if f == Fam6 {
 		network = "udp6"
 	}
+	latencySensitive := IsLatencySensitiveUDP(dstPort)
 	tried := map[string]struct{}{}
 	lastErr := errors.New("no usable network adapter")
 	for {
-		sl := b.S.AcquireFor(f, tried)
+		sl := b.S.acquireFor(f, tried, latencySensitive)
 		if sl == nil {
 			return nil, lastErr
 		}
@@ -115,6 +129,6 @@ func (b *Balancer) ListenUDP(ctx context.Context, f Family) (net.PacketConn, err
 			lastErr = err
 			continue
 		}
-		return &slotPacketConn{PacketConn: pc, sl: sl, fam: f}, nil
+		return &slotPacketConn{PacketConn: pc, sl: sl, fam: f, latencySensitive: latencySensitive}, nil
 	}
 }
