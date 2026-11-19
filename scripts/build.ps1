@@ -34,6 +34,7 @@ Invoke-Native 'build cli'  { go build -trimpath -ldflags "-s -w -X main.version=
 New-Resources 'net-merge-tray.exe' 'NetMerge Windows Dashboard'
 Invoke-Native 'build tray' { go build -trimpath -ldflags "-s -w -H=windowsgui -X main.defaultCmd=tray -X main.version=$Version" -o dist\net-merge-tray.exe .\cmd\net-merge }
 Remove-Item cmd\net-merge\rsrc_windows_amd64.syso
+Invoke-Native 'dashboard smoke test' { .\dist\net-merge.exe _dashboard-smoke }
 Invoke-Native 'icon' { .\dist\net-merge.exe _icon dist\net-merge.ico }
 
 & "$PSScriptRoot\fetch-wintun.ps1" -OutDir dist

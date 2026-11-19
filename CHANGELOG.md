@@ -5,6 +5,13 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-20
+
+- Replaced the Windows dashboard backend with a native Windows Forms window. Launch failures now show an error instead of silently closing.
+- Added a compact dark tray panel and a dark dashboard with Persian and English interface options.
+- Exposed Smart and Round robin controls, with a relay requirement shown for single-flow bonding.
+- Kept manual Windows release builds available for existing tags.
+
 ## [0.5.0] - 2026-11-19
 
 - Added the native Windows dashboard with live link speeds, adapter status, and merge controls.

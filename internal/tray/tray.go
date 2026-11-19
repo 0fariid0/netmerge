@@ -3,8 +3,11 @@
 package tray
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -32,6 +35,10 @@ func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, ve
 	ui.ap.enabled = autoPause
 	ui.roundRobin = roundRobin
 	ui.showDashboard = showDashboard
+	ui.language = "fa"
+	if preference, err := os.ReadFile(filepath.Join(stateDir, "ui-language")); err == nil && string(preference) == "en" {
+		ui.language = "en"
+	}
 	exit := func() { t.Close(); state.Clear(stateDir) }
 	systray.Run(ui.onReady, exit)
 	exit() // macOS's Run returns on Quit without calling onExit; both are idempotent
@@ -47,6 +54,8 @@ type trayUI struct {
 	roundRobin    bool
 	showDashboard bool
 	dashboard     *dashboard.Session
+	language      string
+	popup         bool
 	iconOn        []byte
 	iconOff       []byte
 	ready         chan struct{} // closed once the tray icon exists
@@ -78,6 +87,19 @@ func (u *trayUI) onReady() {
 	u.header = systray.AddMenuItem("net-merge", "")
 	u.header.Disable()
 	var openDashboard <-chan struct{}
+	trayClicks := make(chan bool, 1)
+	if runtime.GOOS == "windows" {
+		click := func(popup bool) func() {
+			return func() {
+				select {
+				case trayClicks <- popup:
+				default:
+				}
+			}
+		}
+		systray.SetOnTapped(click(false))
+		systray.SetOnSecondaryTapped(click(true))
+	}
 	if runtime.GOOS == "windows" {
 		item := systray.AddMenuItem("Open dashboard", "View live link traffic and control merging")
 		openDashboard = item.ClickedCh
@@ -111,6 +133,8 @@ func (u *trayUI) onReady() {
 	distribution := systray.AddMenuItem("Connection distribution", "Applies to new TCP and UDP flows")
 	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", !u.roundRobin)
 	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.roundRobin)
+	bonding := distribution.AddSubMenuItem("Single-flow bonding (relay required)", "Requires a compatible remote relay")
+	bonding.Disable()
 	u.signInItem = systray.AddMenuItemCheckbox("Start at sign-in", "Starts net-merge when you sign in, with no password or admin prompt.", platform.AutostartEnabled())
 	u.toggleItem = systray.AddMenuItem("Start merging", "")
 	u.versionItem = systray.AddMenuItem(versionLabel(u.version), "The version of net-merge that is running (the same as net-merge version). Click to open the release page on GitHub.")
@@ -129,6 +153,35 @@ func (u *trayUI) onReady() {
 		}
 	}
 
+	setAuto := func() {
+		if u.autoItem.Checked() {
+			u.autoItem.Uncheck()
+		} else {
+			u.autoItem.Check()
+		}
+		u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
+	}
+	setSignIn := func() {
+		on := !u.signInItem.Checked()
+		u.lastErr = ""
+		if err := platform.SetAutostart(on); err != nil {
+			u.lastErr = "start at sign-in: " + err.Error()
+			logx.Printf("error: %s\n", u.lastErr)
+		} else if on {
+			u.signInItem.Check()
+		} else {
+			u.signInItem.Uncheck()
+		}
+	}
+	setIPv6 := func() {
+		if u.v6Item.Checked() {
+			u.v6Item.Uncheck()
+			u.bal.SetV6Mode(engine.V6On)
+		} else {
+			u.v6Item.Check()
+			u.bal.SetV6Mode(engine.V6Auto)
+		}
+	}
 	go func() {
 		u.ap.start(u.startOn)
 		switch {
@@ -143,23 +196,28 @@ func (u *trayUI) onReady() {
 			u.turn(true)
 		}
 		if u.showDashboard {
-			u.openDashboard()
+			u.openDashboard(false)
 		}
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		for {
 			u.refresh()
 			var commands <-chan dashboard.Command
-			var closed <-chan struct{}
+			var closed <-chan error
 			if u.dashboard != nil {
 				commands, closed = u.dashboard.Commands, u.dashboard.Done
 			}
 			select {
 			case <-openDashboard:
-				u.openDashboard()
-			case <-closed:
+				u.openDashboard(false)
+			case popup := <-trayClicks:
+				u.openDashboard(popup)
+			case err := <-closed:
 				u.dashboard.Close()
 				u.dashboard = nil
+				if err != nil {
+					u.reportDashboardError(err)
+				}
 			case action := <-commands:
 				switch action {
 				case dashboard.Smart:
@@ -170,43 +228,49 @@ func (u *trayUI) onReady() {
 					u.manual(true)
 				case dashboard.Pause:
 					u.manual(false)
+				case "dashboard":
+					u.openDashboard(false)
+				case "auto":
+					setAuto()
+				case "signin":
+					setSignIn()
+				case "ipv6":
+					setIPv6()
+				case "quit":
+					systray.Quit()
+					return
+				case "lang-fa", "lang-en":
+					u.language = string(action)[5:]
+					if err := os.WriteFile(filepath.Join(u.stateDir, "ui-language"), []byte(u.language), 0o600); err != nil {
+						logx.Printf("save language: %v\n", err)
+					}
+					u.openDashboard(u.popup)
 				case dashboard.Releases:
 					if err := platform.OpenURL(update.ReleasesURL); err != nil {
 						u.lastErr = err.Error()
+					}
+				default:
+					if raw, ok := strings.CutPrefix(string(action), "limit:"); ok {
+						value, encoded, _ := strings.Cut(raw, ":")
+						name, nameErr := base64.StdEncoding.DecodeString(encoded)
+						limit, limitErr := engine.ParseLimit(value)
+						if nameErr == nil && limitErr == nil && len(name) > 0 {
+							u.applyLimit(string(name), limit)
+						}
 					}
 				}
 			case <-u.toggleItem.ClickedCh:
 				u.manual(!u.tun.IsOn())
 			case <-u.autoItem.ClickedCh:
-				if u.autoItem.Checked() {
-					u.autoItem.Uncheck()
-				} else {
-					u.autoItem.Check()
-				}
-				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
+				setAuto()
 			case <-smart.ClickedCh:
 				setDistribution(false)
 			case <-roundRobin.ClickedCh:
 				setDistribution(true)
 			case <-u.signInItem.ClickedCh:
-				on := !u.signInItem.Checked()
-				u.lastErr = ""
-				if err := platform.SetAutostart(on); err != nil {
-					u.lastErr = "start at sign-in: " + err.Error()
-					logx.Printf("error: %s\n", u.lastErr)
-				} else if on {
-					u.signInItem.Check()
-				} else {
-					u.signInItem.Uncheck()
-				}
+				setSignIn()
 			case <-u.v6Item.ClickedCh:
-				if u.v6Item.Checked() {
-					u.v6Item.Uncheck()
-					u.bal.SetV6Mode(engine.V6On)
-				} else {
-					u.v6Item.Check()
-					u.bal.SetV6Mode(engine.V6Auto)
-				}
+				setIPv6()
 			case <-u.versionItem.ClickedCh:
 				if err := platform.OpenURL(update.ReleasesURL); err != nil {
 					logx.Printf("error: opening the release page: %v\n", err)
@@ -222,7 +286,7 @@ func (u *trayUI) onReady() {
 				return
 			case <-tick.C:
 				if runtime.GOOS == "windows" && state.TakeMarker(u.stateDir, "dashboard") {
-					u.openDashboard()
+					u.openDashboard(false)
 				}
 				if req, ok := state.TakeLimit(u.stateDir); ok { // `net-merge limit ...` from a terminal
 					u.applyLimit(req.Adapter, req.Mbps)
@@ -295,17 +359,24 @@ func (u *trayUI) turn(on bool) {
 	}
 }
 
-func (u *trayUI) openDashboard() {
+func (u *trayUI) openDashboard(popup bool) {
 	if u.dashboard != nil {
-		return
+		u.dashboard.Close()
+		u.dashboard = nil
 	}
-	session, err := dashboard.Open(versionLabel(u.version))
+	session, err := dashboard.Open(versionLabel(u.version), u.language, popup)
 	if err != nil {
-		u.lastErr = "open dashboard: " + err.Error()
-		logx.Printf("error: %s\n", u.lastErr)
+		u.reportDashboardError(err)
 		return
 	}
+	u.popup = popup
 	u.dashboard = session
+}
+
+func (u *trayUI) reportDashboardError(err error) {
+	u.lastErr = "open dashboard: " + err.Error()
+	logx.Printf("error: %s\n", u.lastErr)
+	platform.ShowError("NetMerge: " + u.lastErr)
 }
 
 func (u *trayUI) setHeader(s string) {
@@ -343,6 +414,7 @@ func (u *trayUI) refresh() {
 	if u.dashboard != nil {
 		u.dashboard.Update(dashboard.Snapshot{
 			On: on, Waiting: waiting, RoundRobin: u.roundRobin, Error: u.lastErr, Adapters: live,
+			AutoPause: u.ap.enabled, V6Auto: u.v6Item.Checked(), SignIn: u.signInItem.Checked(),
 		})
 	}
 	state := stateWord(on)

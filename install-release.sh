@@ -3,7 +3,7 @@ set -euo pipefail
 
 TARGET="0fariid0/netmerge"
 URL="https://github.com/$TARGET.git"
-TAG="v0.5.0"
+TAG="v0.6.0"
 VERSION="${TAG#v}"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$HOME/github-projects/netmerge}"
@@ -127,7 +127,7 @@ if release_assets_ready; then
 fi
 
 for (( attempt=0; attempt<30; attempt++ )); do
-  recent="$(gh run list --repo "$TARGET" --workflow release.yml --event push --commit "$release_commit" \
+  recent="$(gh run list --repo "$TARGET" --workflow release.yml --commit "$release_commit" \
     --limit 1 --json databaseId,status,conclusion \
     --jq '.[] | [.databaseId,.status,.conclusion] | @tsv' 2>/dev/null)" || recent=""
   if [[ -n "$recent" ]]; then
@@ -139,6 +139,9 @@ for (( attempt=0; attempt<30; attempt++ )); do
     release_assets_ready || fail "Build finished but the installer and portable ZIP are not both in Releases."
     printf 'Published Windows installer and portable ZIP.\n'
     exit 0
+  fi
+  if (( attempt == 6 )); then
+    gh workflow run release.yml --repo "$TARGET" --ref "$branch" -f "tag=$TAG"
   fi
   sleep 4
 done

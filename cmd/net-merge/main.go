@@ -265,11 +265,8 @@ func main() {
 		if err := os.WriteFile(args[0], icon.ICO(true), 0o644); err != nil {
 			die(err)
 		}
-	case "_dashboard":
-		if len(args) != 1 {
-			os.Exit(2)
-		}
-		if err := dashboard.Run(args[0]); err != nil {
+	case "_dashboard-smoke":
+		if err := dashboard.Smoke(); err != nil {
 			fmt.Fprintln(os.Stderr, "dashboard:", err)
 			os.Exit(1)
 		}

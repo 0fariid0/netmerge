@@ -6,6 +6,9 @@ import "net-merge/internal/engine"
 // Snapshot is a read-only view of the running tray. It includes adapters while
 // merging is paused, so the window still shows physical link activity.
 type Snapshot struct {
+	AutoPause  bool
+	V6Auto     bool
+	SignIn     bool
 	On         bool
 	Waiting    bool
 	RoundRobin bool
@@ -26,8 +29,9 @@ const (
 // Session owns the pipes to one dashboard window.
 type Session struct {
 	snapshots chan Snapshot
+	stop      chan struct{}
 	Commands  <-chan Command
-	Done      <-chan struct{}
+	Done      <-chan error
 }
 
 // Update offers the latest state without blocking tray controls behind the UI.
@@ -45,4 +49,4 @@ func (s *Session) Update(snapshot Snapshot) {
 }
 
 // Close ends the feed. The child closes its window when it loses the feed.
-func (s *Session) Close() { close(s.snapshots) }
+func (s *Session) Close() { close(s.stop); close(s.snapshots) }
