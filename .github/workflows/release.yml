@@ -1,0 +1,55 @@
+name: release
+# Push a tag like v0.2.0 to build the installer and portable zip and publish a GitHub release.
+# The release notes are that version's section of CHANGELOG.md; the run fails early if it's missing.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes from CHANGELOG.md
+        shell: pwsh
+        run: ./scripts/release-notes.ps1 -Version ($env:RELEASE_TAG.TrimStart('v')) -Out release-notes.md
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart('v')
+          ./scripts/build.ps1 -Version $version -RepoUrl "${{ github.server_url }}/${{ github.repository }}"
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $title = 'NetMerge Windows ' + $tag
+          $version = $tag.TrimStart('v')
+          $files = @("dist/net-merge-setup-$version.exe", "dist/net-merge-$version-portable.zip")
+          foreach ($file in $files) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing release asset: $file" }
+          }
+          $PSNativeCommandUseErrorActionPreference = $false
+          $uploaded = gh release view $tag --json assets --jq '.assets[].name' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            foreach ($file in $files) {
+              if ($uploaded -notcontains (Split-Path -Leaf $file)) {
+                gh release upload $tag $file
+                if ($LASTEXITCODE -ne 0) { throw "Uploading $file failed" }
+              }
+            }
+          } else {
+            gh release create $tag $files --verify-tag --title $title --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "Publishing the release failed" }
+          }
