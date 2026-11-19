@@ -3,7 +3,6 @@
 package tray
 
 import (
-	"encoding/base64"
 	"fmt"
 	"math"
 	"os"
@@ -15,7 +14,6 @@ import (
 
 	"fyne.io/systray"
 
-	"net-merge/internal/dashboard"
 	"net-merge/internal/engine"
 	"net-merge/internal/icon"
 	"net-merge/internal/logx"
@@ -29,15 +27,16 @@ const trayRows = 4 // adapters shown in the menu; extra rows stay hidden
 
 // Run shows the tray icon and blocks until Quit, and closes ready once the icon exists. With
 // startOn it merges as soon as it can (at once, or, with autoPause, once two connections work).
-func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, version string, startOn, autoPause, roundRobin, showDashboard bool, ready chan struct{}) {
+func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, version string, startOn, autoPause, roundRobin bool, ready chan struct{}) {
 	ui := &trayUI{tun: t, sched: sched, bal: bal, stateDir: stateDir, version: version, startOn: startOn,
 		iconOn: icon.Tray(true), iconOff: icon.Tray(false), ready: ready}
 	ui.ap.enabled = autoPause
 	ui.roundRobin = roundRobin
-	ui.showDashboard = showDashboard
-	ui.language = "fa"
-	if preference, err := os.ReadFile(filepath.Join(stateDir, "ui-language")); err == nil && string(preference) == "en" {
-		ui.language = "en"
+	ui.languagePath = filepath.Join(stateDir, "ui-language")
+	if pref, err := os.ReadFile(ui.languagePath); err == nil {
+		ui.persian = strings.TrimSpace(string(pref)) == "fa"
+	} else {
+		ui.persian = runtime.GOOS == "windows"
 	}
 	exit := func() { t.Close(); state.Clear(stateDir) }
 	systray.Run(ui.onReady, exit)
@@ -45,20 +44,18 @@ func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, ve
 }
 
 type trayUI struct {
-	tun           *tun.Tun
-	bal           *engine.Balancer
-	sched         *engine.Scheduler
-	stateDir      string
-	version       string
-	startOn       bool
-	roundRobin    bool
-	showDashboard bool
-	dashboard     *dashboard.Session
-	language      string
-	popup         bool
-	iconOn        []byte
-	iconOff       []byte
-	ready         chan struct{} // closed once the tray icon exists
+	tun          *tun.Tun
+	bal          *engine.Balancer
+	sched        *engine.Scheduler
+	stateDir     string
+	version      string
+	startOn      bool
+	roundRobin   bool
+	persian      bool
+	languagePath string
+	iconOn       []byte
+	iconOff      []byte
+	ready        chan struct{} // closed once the tray icon exists
 
 	ap autoPauser
 
@@ -86,23 +83,15 @@ func (u *trayUI) onReady() {
 	systray.SetTooltip("net-merge")
 	u.header = systray.AddMenuItem("net-merge", "")
 	u.header.Disable()
-	var openDashboard <-chan struct{}
-	trayClicks := make(chan bool, 1)
-	if runtime.GOOS == "windows" {
-		click := func(popup bool) func() {
-			return func() {
-				select {
-				case trayClicks <- popup:
-				default:
-				}
-			}
-		}
-		systray.SetOnTapped(click(false))
-		systray.SetOnSecondaryTapped(click(true))
+	type menuLabel struct {
+		item    *systray.MenuItem
+		english string
+		persian string
 	}
-	if runtime.GOOS == "windows" {
-		item := systray.AddMenuItem("Open dashboard", "View live link traffic and control merging")
-		openDashboard = item.ClickedCh
+	var labels []menuLabel
+	localize := func(item *systray.MenuItem, en, fa string) {
+		labels = append(labels, menuLabel{item, en, fa})
+		item.SetTitle(u.text(en, fa))
 	}
 	systray.AddSeparator()
 	u.limitClicks = make(chan limitClick, trayRows)
@@ -119,6 +108,7 @@ func (u *trayUI) onReady() {
 			return it
 		}
 		u.limitUnlim[i] = addLimit(0, "Unlimited")
+		localize(u.limitUnlim[i], "Unlimited", "بدون محدودیت")
 		for _, mbitPerSec := range limitPresets {
 			u.limitPreset[i] = append(u.limitPreset[i], addLimit(mbitPerSec, limitText(mbitPerSec)))
 		}
@@ -133,55 +123,24 @@ func (u *trayUI) onReady() {
 	distribution := systray.AddMenuItem("Connection distribution", "Applies to new TCP and UDP flows")
 	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", !u.roundRobin)
 	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.roundRobin)
-	bonding := distribution.AddSubMenuItem("Single-flow bonding (relay required)", "Requires a compatible remote relay")
-	bonding.Disable()
+	bond := distribution.AddSubMenuItem("Single connection (relay required)", "")
+	bond.Disable()
 	u.signInItem = systray.AddMenuItemCheckbox("Start at sign-in", "Starts net-merge when you sign in, with no password or admin prompt.", platform.AutostartEnabled())
 	u.toggleItem = systray.AddMenuItem("Start merging", "")
 	u.versionItem = systray.AddMenuItem(versionLabel(u.version), "The version of net-merge that is running (the same as net-merge version). Click to open the release page on GitHub.")
 	quit := systray.AddMenuItem("Quit", "Turns system-wide mode off and exits")
+	language := systray.AddMenuItem(u.text("فارسی", "English"), "")
+	localize(u.v6Item, "Use all adapters (IPv6 only if every adapter has it)", "استفاده از همهٔ شبکه‌ها (IPv6 در صورت پشتیبانی همه)")
+	localize(u.autoItem, "Pause when there is only one connection", "توقف خودکار با یک اتصال")
+	localize(distribution, "Connection distribution", "حالت توزیع اتصال")
+	localize(smart, "Smart (weighted)", "هوشمند (وزنی)")
+	localize(roundRobin, "Round robin", "نوبتی")
+	localize(bond, "Single connection (relay required)", "ادغام یک اتصال (نیازمند سرور واسط)")
+	localize(u.signInItem, "Start at sign-in", "شروع با ورود به ویندوز")
+	localize(quit, "Quit", "خروج")
+	localize(language, "فارسی", "English")
 	go u.watchUpdates()
 
-	setDistribution := func(on bool) {
-		u.sched.SetRoundRobin(on)
-		u.roundRobin = on
-		if on {
-			roundRobin.Check()
-			smart.Uncheck()
-		} else {
-			smart.Check()
-			roundRobin.Uncheck()
-		}
-	}
-
-	setAuto := func() {
-		if u.autoItem.Checked() {
-			u.autoItem.Uncheck()
-		} else {
-			u.autoItem.Check()
-		}
-		u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
-	}
-	setSignIn := func() {
-		on := !u.signInItem.Checked()
-		u.lastErr = ""
-		if err := platform.SetAutostart(on); err != nil {
-			u.lastErr = "start at sign-in: " + err.Error()
-			logx.Printf("error: %s\n", u.lastErr)
-		} else if on {
-			u.signInItem.Check()
-		} else {
-			u.signInItem.Uncheck()
-		}
-	}
-	setIPv6 := func() {
-		if u.v6Item.Checked() {
-			u.v6Item.Uncheck()
-			u.bal.SetV6Mode(engine.V6On)
-		} else {
-			u.v6Item.Check()
-			u.bal.SetV6Mode(engine.V6Auto)
-		}
-	}
 	go func() {
 		u.ap.start(u.startOn)
 		switch {
@@ -195,82 +154,58 @@ func (u *trayUI) onReady() {
 		default:
 			u.turn(true)
 		}
-		if u.showDashboard {
-			u.openDashboard(false)
-		}
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		for {
 			u.refresh()
-			var commands <-chan dashboard.Command
-			var closed <-chan error
-			if u.dashboard != nil {
-				commands, closed = u.dashboard.Commands, u.dashboard.Done
-			}
 			select {
-			case <-openDashboard:
-				u.openDashboard(false)
-			case popup := <-trayClicks:
-				u.openDashboard(popup)
-			case err := <-closed:
-				u.dashboard.Close()
-				u.dashboard = nil
-				if err != nil {
-					u.reportDashboardError(err)
+			case <-language.ClickedCh:
+				pref := u.text("fa", "en")
+				if err := os.WriteFile(u.languagePath, []byte(pref), 0o600); err != nil {
+					u.lastErr = err.Error()
+					break
 				}
-			case action := <-commands:
-				switch action {
-				case dashboard.Smart:
-					setDistribution(false)
-				case dashboard.RoundRobin:
-					setDistribution(true)
-				case dashboard.Start:
-					u.manual(true)
-				case dashboard.Pause:
-					u.manual(false)
-				case "dashboard":
-					u.openDashboard(false)
-				case "auto":
-					setAuto()
-				case "signin":
-					setSignIn()
-				case "ipv6":
-					setIPv6()
-				case "quit":
-					systray.Quit()
-					return
-				case "lang-fa", "lang-en":
-					u.language = string(action)[5:]
-					if err := os.WriteFile(filepath.Join(u.stateDir, "ui-language"), []byte(u.language), 0o600); err != nil {
-						logx.Printf("save language: %v\n", err)
-					}
-					u.openDashboard(u.popup)
-				case dashboard.Releases:
-					if err := platform.OpenURL(update.ReleasesURL); err != nil {
-						u.lastErr = err.Error()
-					}
-				default:
-					if raw, ok := strings.CutPrefix(string(action), "limit:"); ok {
-						value, encoded, _ := strings.Cut(raw, ":")
-						name, nameErr := base64.StdEncoding.DecodeString(encoded)
-						limit, limitErr := engine.ParseLimit(value)
-						if nameErr == nil && limitErr == nil && len(name) > 0 {
-							u.applyLimit(string(name), limit)
-						}
-					}
+				u.persian = !u.persian
+				for _, label := range labels {
+					label.item.SetTitle(u.text(label.english, label.persian))
 				}
+				u.lastOn = nil
 			case <-u.toggleItem.ClickedCh:
 				u.manual(!u.tun.IsOn())
 			case <-u.autoItem.ClickedCh:
-				setAuto()
+				if u.autoItem.Checked() {
+					u.autoItem.Uncheck()
+				} else {
+					u.autoItem.Check()
+				}
+				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
 			case <-smart.ClickedCh:
-				setDistribution(false)
+				u.sched.SetRoundRobin(false)
+				smart.Check()
+				roundRobin.Uncheck()
 			case <-roundRobin.ClickedCh:
-				setDistribution(true)
+				u.sched.SetRoundRobin(true)
+				roundRobin.Check()
+				smart.Uncheck()
 			case <-u.signInItem.ClickedCh:
-				setSignIn()
+				on := !u.signInItem.Checked()
+				u.lastErr = ""
+				if err := platform.SetAutostart(on); err != nil {
+					u.lastErr = "start at sign-in: " + err.Error()
+					logx.Printf("error: %s\n", u.lastErr)
+				} else if on {
+					u.signInItem.Check()
+				} else {
+					u.signInItem.Uncheck()
+				}
 			case <-u.v6Item.ClickedCh:
-				setIPv6()
+				if u.v6Item.Checked() {
+					u.v6Item.Uncheck()
+					u.bal.SetV6Mode(engine.V6On)
+				} else {
+					u.v6Item.Check()
+					u.bal.SetV6Mode(engine.V6Auto)
+				}
 			case <-u.versionItem.ClickedCh:
 				if err := platform.OpenURL(update.ReleasesURL); err != nil {
 					logx.Printf("error: opening the release page: %v\n", err)
@@ -285,9 +220,6 @@ func (u *trayUI) onReady() {
 				systray.Quit()
 				return
 			case <-tick.C:
-				if runtime.GOOS == "windows" && state.TakeMarker(u.stateDir, "dashboard") {
-					u.openDashboard(false)
-				}
 				if req, ok := state.TakeLimit(u.stateDir); ok { // `net-merge limit ...` from a terminal
 					u.applyLimit(req.Adapter, req.Mbps)
 				}
@@ -359,26 +291,6 @@ func (u *trayUI) turn(on bool) {
 	}
 }
 
-func (u *trayUI) openDashboard(popup bool) {
-	if u.dashboard != nil {
-		u.dashboard.Close()
-		u.dashboard = nil
-	}
-	session, err := dashboard.Open(versionLabel(u.version), u.language, popup)
-	if err != nil {
-		u.reportDashboardError(err)
-		return
-	}
-	u.popup = popup
-	u.dashboard = session
-}
-
-func (u *trayUI) reportDashboardError(err error) {
-	u.lastErr = "open dashboard: " + err.Error()
-	logx.Printf("error: %s\n", u.lastErr)
-	platform.ShowError("NetMerge: " + u.lastErr)
-}
-
 func (u *trayUI) setHeader(s string) {
 	if s != u.lastHeader {
 		u.header.SetTitle(s)
@@ -386,15 +298,22 @@ func (u *trayUI) setHeader(s string) {
 	}
 }
 
+func (u *trayUI) text(en, fa string) string {
+	if u.persian {
+		return fa
+	}
+	return en
+}
+
 func (u *trayUI) refresh() {
 	on := u.tun.IsOn()
 	if u.lastOn == nil || *u.lastOn != on {
 		if on {
 			systray.SetIcon(u.iconOn)
-			u.toggleItem.SetTitle("Pause merging")
+			u.toggleItem.SetTitle(u.text("Pause merging", "توقف ادغام"))
 		} else {
 			systray.SetIcon(u.iconOff)
-			u.toggleItem.SetTitle("Start merging")
+			u.toggleItem.SetTitle(u.text("Start merging", "شروع ادغام"))
 		}
 		u.lastOn = &on
 	}
@@ -410,22 +329,18 @@ func (u *trayUI) refresh() {
 			up += s.LinkOut
 		}
 	}
-	waiting := !on && u.ap.enabled && u.ap.waiting && !u.ap.manualOff
-	if u.dashboard != nil {
-		u.dashboard.Update(dashboard.Snapshot{
-			On: on, Waiting: waiting, RoundRobin: u.roundRobin, Error: u.lastErr, Adapters: live,
-			AutoPause: u.ap.enabled, V6Auto: u.v6Item.Checked(), SignIn: u.signInItem.Checked(),
-		})
+	state := u.text(stateWord(on), "متوقف")
+	if on {
+		state = u.text(state, "ادغام فعال")
 	}
-	state := stateWord(on)
-	if waiting {
-		state = "Paused: one connection"
+	if !on && u.ap.enabled && u.ap.waiting && !u.ap.manualOff {
+		state = u.text("Paused: one connection", "متوقف: یک اتصال")
 	}
 
 	if u.lastErr != "" {
 		u.setHeader("Error: " + shorten(u.lastErr, 70))
 	} else {
-		u.setHeader(fmt.Sprintf("%s  ·  Total ↓%s ↑%s Mbps", state, mbps(down), mbps(up)))
+		u.setHeader(fmt.Sprintf(u.text("%s  ·  Total ↓%s ↑%s Mbps", "%s  ·  مجموع ↓%s ↑%s Mbps"), state, mbps(down), mbps(up)))
 	}
 
 	for i, r := range u.rows {
@@ -444,7 +359,7 @@ func (u *trayUI) refresh() {
 			txt += "  limit " + limitText(s.LimitMbps)
 		}
 		if on {
-			txt += fmt.Sprintf("  (%d flows via net-merge)", s.Active)
+			txt += fmt.Sprintf(u.text("  (%d flows via net-merge)", "  (%d اتصال فعال)"), s.Active)
 		}
 		if s.State != "up" && s.State6 != "up" { // neither family verified yet, or no internet
 			txt += "  - " + s.State

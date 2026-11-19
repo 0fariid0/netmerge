@@ -5,9 +5,11 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
-## [0.6.1] - 2026-11-20
+## [0.7.0] - 2026-11-20
 
-- Remove the retired dashboard file so Windows builds use the new dashboard.
+- Restored the standard Windows tray menu and removed the separate dashboard.
+- Added Persian and English switching directly from the tray menu.
+- Removed retired dashboard files when upgrading a checkout.
 
 ## [0.6.0] - 2026-11-20
 

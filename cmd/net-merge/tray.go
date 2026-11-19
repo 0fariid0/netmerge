@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -24,15 +23,7 @@ func cmdTray(args []string) {
 	hidden := fs.Bool("hidden", true, "hide the console window of the elevated process")
 	startOff := fs.Bool("off", false, "start with system-wide mode OFF (default: ON)")
 	autoPause := fs.Bool("auto-pause", true, "pause by itself when fewer than two connections work, and resume when two do (pausing by hand always wins)")
-	openDashboard := fs.Bool("dashboard", false, "open the Windows dashboard")
 	fs.Parse(args)
-	showDashboard := *openDashboard && runtime.GOOS == "windows"
-	if showDashboard && platform.InstanceRunning() {
-		if err := state.SendMarker(c.stateDir, "dashboard"); err != nil {
-			die(err)
-		}
-		return
-	}
 
 	if !platform.IsAdmin() {
 		child := append([]string{"tray"}, args...)
@@ -98,5 +89,5 @@ func cmdTray(args []string) {
 		state.Clear(c.stateDir)
 		os.Exit(0)
 	}()
-	tray.Run(t, sched, bal, c.stateDir, version, !*startOff, *autoPause, c.distribution == "round-robin", showDashboard, ready)
+	tray.Run(t, sched, bal, c.stateDir, version, !*startOff, *autoPause, c.distribution == "round-robin", ready)
 }

@@ -60,7 +60,7 @@ Name: "{autodesktop}\NetMerge"; Filename: "{app}\net-merge-tray.exe"; IconFilena
 [Run]
 Filename: "{app}\net-merge.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart; StatusMsg: "Enabling start at sign-in..."
 ; The installer is already elevated, so the tray starts without a second UAC prompt.
-Filename: "{app}\net-merge-tray.exe"; Description: "Open NetMerge dashboard"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\net-merge-tray.exe"; Description: "Start NetMerge"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{app}\net-merge.exe"; Parameters: "autostart off"; Flags: runhidden; RunOnceId: "AutostartOff"

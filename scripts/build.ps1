@@ -31,10 +31,9 @@ function New-Resources([string]$Exe, [string]$Description) {
 # One source, two exes: a console CLI, and a windowless build that defaults to the tray.
 New-Resources 'net-merge.exe' 'net-merge'
 Invoke-Native 'build cli'  { go build -trimpath -ldflags "-s -w -X main.version=$Version" -o dist\net-merge.exe .\cmd\net-merge }
-New-Resources 'net-merge-tray.exe' 'NetMerge Windows Dashboard'
+New-Resources 'net-merge-tray.exe' 'NetMerge Windows Tray'
 Invoke-Native 'build tray' { go build -trimpath -ldflags "-s -w -H=windowsgui -X main.defaultCmd=tray -X main.version=$Version" -o dist\net-merge-tray.exe .\cmd\net-merge }
 Remove-Item cmd\net-merge\rsrc_windows_amd64.syso
-Invoke-Native 'dashboard smoke test' { .\dist\net-merge.exe _dashboard-smoke }
 Invoke-Native 'icon' { .\dist\net-merge.exe _icon dist\net-merge.ico }
 
 & "$PSScriptRoot\fetch-wintun.ps1" -OutDir dist

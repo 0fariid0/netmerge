@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"net-merge/internal/dashboard"
 	"net-merge/internal/engine"
 	"net-merge/internal/icon"
 	"net-merge/internal/logx"
@@ -265,15 +264,7 @@ func main() {
 		if err := os.WriteFile(args[0], icon.ICO(true), 0o644); err != nil {
 			die(err)
 		}
-	case "_dashboard-smoke":
-		if err := dashboard.Smoke(); err != nil {
-			fmt.Fprintln(os.Stderr, "dashboard:", err)
-			os.Exit(1)
-		}
 	case "tray":
-		if len(os.Args) == 1 {
-			args = []string{"-dashboard"}
-		}
 		cmdTray(args)
 	case "run":
 		cmdRun(args)
