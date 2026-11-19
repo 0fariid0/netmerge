@@ -2,6 +2,12 @@ name: release
 # Push a tag like v0.2.0 to build the installer and portable zip and publish a GitHub release.
 # The release notes are that version's section of CHANGELOG.md; the run fails early if it's missing.
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
   push:
     tags: ['v*']
 
@@ -12,9 +18,11 @@ jobs:
   release:
     runs-on: windows-latest
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - name: Release notes from CHANGELOG.md
         shell: pwsh
         run: ./scripts/release-notes.ps1 -Version ($env:RELEASE_TAG.TrimStart('v')) -Out release-notes.md
