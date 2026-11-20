@@ -3,7 +3,6 @@
 package tray
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
@@ -163,55 +162,9 @@ func (u *trayUI) onReady() {
 	localize(u.signInItem, "Start at sign-in", "شروع با ورود به ویندوز")
 	localize(quit, "Quit", "خروج")
 	localize(language, "فارسی", "English")
-	tools := systray.AddMenuItem("Diagnostics", "")
-	loadTest := tools.AddSubMenuItem("Test links under load", "Uses up to 36 MiB per adapter")
-	openTest := tools.AddSubMenuItem("Open last load test", "")
-	record := tools.AddSubMenuItem("Start / stop match recording", "")
-	openRecord := tools.AddSubMenuItem("Open match comparison", "")
-	localize(tools, "Diagnostics", "آزمایش و گزارش")
-	localize(loadTest, "Test links under load (up to 36 MiB per link)", "تست لینک زیر بار (تا ۳۶ مگابایت برای هر لینک)")
-	localize(openTest, "Open last load test", "مشاهدهٔ آخرین تست لینک")
-	localize(record, "Start / stop match recording", "شروع یا پایان ثبت مچ")
-	localize(openRecord, "Open match comparison", "مشاهدهٔ مقایسهٔ مچ")
 	go u.watchUpdates()
 
 	go func() {
-		var active *matchRecord
-		var testDone <-chan error
-		var cancelTest context.CancelFunc
-		defer func() {
-			if cancelTest != nil {
-				cancelTest()
-			}
-		}()
-		reports := map[string]string{}
-		for _, mode := range []string{"smart", "round-robin", "game"} {
-			if data, err := os.ReadFile(filepath.Join(u.stateDir, "match-"+mode+".txt")); err == nil {
-				reports[mode] = string(data)
-			}
-		}
-		finishRecord := func() {
-			if active == nil {
-				return
-			}
-			reports[active.mode] = active.text(time.Now())
-			if err := os.WriteFile(filepath.Join(u.stateDir, "match-"+active.mode+".txt"), []byte(reports[active.mode]), 0o600); err != nil {
-				u.lastErr = err.Error()
-			}
-			var combined strings.Builder
-			combined.WriteString("NetMerge match comparison\nMeasurements are public probe RTT, not the game's telemetry. Test the same game region and similar network load.\n")
-			for _, mode := range []string{"smart", "round-robin", "game"} {
-				if report, ok := reports[mode]; ok {
-					combined.WriteString("\n" + report + "\n")
-				}
-			}
-			if err := os.WriteFile(filepath.Join(u.stateDir, gameReportFile), []byte(combined.String()), 0o600); err != nil {
-				u.lastErr = err.Error()
-			}
-			active = nil
-			u.sched.SetRecording(false)
-			record.Uncheck()
-		}
 		u.ap.start(u.startOn)
 		switch {
 		case !u.startOn:
@@ -229,42 +182,6 @@ func (u *trayUI) onReady() {
 		for {
 			u.refresh()
 			select {
-			case <-loadTest.ClickedCh:
-				if testDone != nil {
-					break
-				}
-				u.lastErr = ""
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				cancelTest = cancel
-				done := make(chan error, 1)
-				testDone = done
-				loadTest.Disable()
-				go func() {
-					defer cancel()
-					results := u.sched.TestUnderLoad(ctx)
-					done <- os.WriteFile(filepath.Join(u.stateDir, loadTestFile), []byte(loadTestText(results)), 0o600)
-				}()
-			case err := <-testDone:
-				testDone = nil
-				cancelTest = nil
-				loadTest.Enable()
-				if err != nil {
-					u.lastErr = err.Error()
-				} else {
-					u.openDiagnostics(loadTestFile)
-				}
-			case <-openTest.ClickedCh:
-				u.openDiagnostics(loadTestFile)
-			case <-record.ClickedCh:
-				if active != nil {
-					finishRecord()
-					break
-				}
-				active = &matchRecord{start: time.Now(), mode: u.mode, links: map[string]*matchLink{}, routes: map[string]int{}}
-				u.sched.SetRecording(true)
-				record.Check()
-			case <-openRecord.ClickedCh:
-				u.openDiagnostics(gameReportFile)
 			case <-language.ClickedCh:
 				pref := u.text("fa", "en")
 				if err := os.WriteFile(u.languagePath, []byte(pref), 0o600); err != nil {
@@ -287,17 +204,14 @@ func (u *trayUI) onReady() {
 				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
 			case <-smart.ClickedCh:
 				if u.mode != "smart" {
-					finishRecord()
 					setMode("smart")
 				}
 			case <-roundRobin.ClickedCh:
 				if u.mode != "round-robin" {
-					finishRecord()
 					setMode("round-robin")
 				}
 			case <-game.ClickedCh:
 				if u.mode != "game" {
-					finishRecord()
 					setMode("game")
 				}
 			case <-u.signInItem.ClickedCh:
@@ -330,23 +244,14 @@ func (u *trayUI) onReady() {
 					u.applyLimit(u.rowNames[c.row], c.mbitPerSec)
 				}
 			case <-quit.ClickedCh:
-				finishRecord()
 				systray.Quit()
 				return
-			case now := <-tick.C:
-				if active != nil {
-					if now.Sub(active.start) >= maxGameRecord {
-						finishRecord()
-					} else {
-						active.sample(u.sched.Snapshot(), u.sched.LatestGameRoute())
-					}
-				}
+			case <-tick.C:
 				if req, ok := state.TakeLimit(u.stateDir); ok { // `net-merge limit ...` from a terminal
 					u.applyLimit(req.Adapter, req.Mbps)
 				}
 				switch { // `net-merge on|off|quit` from a terminal
 				case state.TakeMarker(u.stateDir, "quit"):
-					finishRecord()
 					systray.Quit()
 					return
 				case state.TakeMarker(u.stateDir, "off"):

@@ -28,17 +28,15 @@ Route changes apply to new connections. The tray shows the selected link and pro
 The adaptive cap is directional. It estimates pressure from traffic NetMerge handles and cuts bulk traffic when
 a fresh probe shows increased latency. It recovers gradually after sustained good samples.
 
-Under **Diagnostics**, test each available adapter idle, while downloading and while uploading. This uses the
-Cloudflare speed-test endpoint (at most 32 MiB download and 4 MiB upload per adapter, plus protocol overhead).
-The report includes sample counts and marks results with too little data for a comparison.
-Record one match in Smart mode and another in Game mode using **Start / stop match recording**.
-The text report compares recent recordings per mode; RTT is the NetMerge measurement, not in-game telemetry.
+Smart distribution learns download and upload capacity separately from ordinary traffic. It considers
+current adapter load, recent throughput and configured caps when choosing a link for a new connection.
+Unmeasured links can still receive traffic. Existing connections stay on the link that opened them.
 
-## Publish v0.9.0
+## Publish v1.0.0
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 0.9.0` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.0.0` with PowerShell.

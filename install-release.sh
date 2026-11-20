@@ -3,7 +3,7 @@ set -euo pipefail
 
 TARGET="0fariid0/netmerge"
 URL="https://github.com/$TARGET.git"
-TAG="v0.9.0"
+TAG="v1.0.0"
 VERSION="${TAG#v}"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$HOME/github-projects/netmerge}"
@@ -86,6 +86,7 @@ else
   done < <(find "$SOURCE" -mindepth 1 -maxdepth 1 ! -name .git -print0)
   # Remove the former dashboard sources from older checkouts. The tray has no GUI child.
   git rm --ignore-unmatch -- internal/dashboard/{dashboard.go,dashboard_other.go,process_windows.go,window_windows.go,window.ps1}
+  git rm --ignore-unmatch -- internal/engine/loadtest.go internal/tray/diagnostics.go
   git add --all
   if ! git diff --cached --quiet; then
     account_id="$(gh api --hostname github.com user --jq .id)"

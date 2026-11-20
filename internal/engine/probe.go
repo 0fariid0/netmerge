@@ -99,7 +99,7 @@ func (s *Scheduler) probeDue() []probeJob {
 				continue
 			}
 			every := probeEveryUp
-			if s.game || s.recording {
+			if s.game {
 				every = 3 * time.Second
 			}
 			switch sl.state[f] {
@@ -116,11 +116,4 @@ func (s *Scheduler) probeDue() []probeJob {
 		}
 	}
 	return due
-}
-
-// SetRecording gives baseline and game recordings the same probe cadence.
-func (s *Scheduler) SetRecording(recording bool) {
-	s.mu.Lock()
-	s.recording = recording
-	s.mu.Unlock()
 }

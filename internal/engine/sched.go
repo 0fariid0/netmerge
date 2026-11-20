@@ -71,6 +71,8 @@ type Slot struct {
 	rateIn, rateOut [2]float64 // bytes/s over the last tick
 	peak            [2]float64 // observed capacity: max recent rateIn+rateOut
 	flows           [2]map[*flowActivity]struct{}
+	idleCount       [2]int64
+	capacity        [2][2]directionCapacity
 
 	// The adapter's total traffic from the OS's counters (all apps, not only net-merge's flows).
 	linkIn, linkOut         uint64
@@ -101,19 +103,18 @@ func (s *Scheduler) track(sl *Slot, f Family) *flowActivity {
 
 func (s *Scheduler) untrack(sl *Slot, f Family, a *flowActivity) {
 	s.mu.Lock()
-	delete(sl.flows[f], a)
+	if _, tracked := sl.flows[f][a]; tracked {
+		if a.idle >= flowIdleAfter {
+			sl.idleCount[f]--
+		}
+		delete(sl.flows[f], a)
+	}
 	s.mu.Unlock()
 }
 
 func (sl *Slot) busy(f Family) int64 {
-	// Acquired but not yet tracked flows are connecting, and must count too.
-	n := max(int64(0), sl.actF[f].Load()-int64(len(sl.flows[f])))
-	for a := range sl.flows[f] {
-		if a.idle < flowIdleAfter {
-			n++
-		}
-	}
-	return n
+	// Connecting flows count, and idle sockets are cached by Tick.
+	return max(0, sl.actF[f].Load()-sl.idleCount[f])
 }
 
 func (sl *Slot) ip(f Family) net.IP {
@@ -139,10 +140,6 @@ type SlotStats struct {
 	LinkIn, LinkOut          float64 // through the adapter by any app, from the OS's counters (bytes/s)
 	Peak, Peak6              float64
 	ProbeRTT, ProbeJitter    time.Duration
-	ProbeLast                time.Duration
-	ProbeSequence            uint64
-	ProbeFamily              Family
-	ProbeOK                  bool
 	ProbeFail                float64
 	GameActive               bool
 	GameDownMbps, GameUpMbps float64
@@ -162,7 +159,6 @@ type Scheduler struct {
 	genericPreference  [2]routePreference
 	probeRevision      [2]uint64
 	lastGameRoute      GameRoute
-	recording          bool
 	game               bool
 	next               [2]uint64
 	limits             map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
@@ -261,7 +257,7 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 		na := normAddr(n)
 		var found *Slot
 		for _, sl := range s.slots {
-			if sl.key == n.Name {
+			if sl.key == n.Name && sl.Index == n.Index {
 				found = sl
 				break
 			}
@@ -288,6 +284,7 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 				found.quality[f] = linkQuality{}
 				found.lastProbe[f], found.downUntil[f] = time.Time{}, time.Time{}
 				found.peak[f] = 0
+				found.capacity[f] = [2]directionCapacity{}
 				if s.auto {
 					found.weight[f] = 1
 				}
@@ -343,6 +340,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			sl.linkRateIn, sl.linkRateOut, sl.linkPrimed = 0, 0, false
 			continue
 		}
+		sl.linkRateIn, sl.linkRateOut = 0, 0
 		if sl.linkPrimed && in >= sl.linkIn && out >= sl.linkOut { // counters can reset when an adapter reconnects
 			sl.linkRateIn = float64(in-sl.linkIn) / sec
 			sl.linkRateOut = float64(out-sl.linkOut) / sec
@@ -355,11 +353,19 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		idle := map[*Slot]bool{}
 		for _, sl := range s.slots {
 			for a := range sl.flows[f] {
+				wasIdle := a.idle >= flowIdleAfter
 				n := a.bytes.Load()
 				if n != a.last {
 					a.idle = 0
 				} else {
 					a.idle += dt
+				}
+				if isIdle := a.idle >= flowIdleAfter; isIdle != wasIdle {
+					if isIdle {
+						sl.idleCount[f]++
+					} else {
+						sl.idleCount[f]--
+					}
 				}
 				a.last = n
 			}
@@ -367,6 +373,8 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			sl.rateIn[f] = float64(in-sl.lastIn[f]) / sec
 			sl.rateOut[f] = float64(out-sl.lastOut[f]) / sec
 			sl.lastIn[f], sl.lastOut[f] = in, out
+			// The directional estimates only use traffic observed on this link.
+			sl.sampleCapacity(f, sec)
 			r := sl.rateIn[f] + sl.rateOut[f]
 			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] {
 				if sl.peak[f] == 0 {
@@ -508,17 +516,21 @@ func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, laten
 		// lock onto e.g. "every third flow is a short DNS-like one" and starve an adapter).
 		start := rand.IntN(len(pool))
 		bestScore := math.Inf(1)
+		profile := trafficProfile{}
+		if s.auto {
+			profile = measureDemand(pool, f)
+		}
 		for i := range pool {
 			sl := pool[(start+i)%len(pool)]
 			load := sl.actF[f].Load()
 			if s.auto {
 				load = sl.busy(f)
 			}
-			score := float64(load+1) / sl.weight[f]
-			if s.auto && sl.peak[f] >= minMeasuredPeak {
-				busyShare := min(1, (sl.rateIn[f]+sl.rateOut[f])/sl.peak[f])
-				score *= 1 + busyShare
+			weight := sl.weight[f]
+			if s.auto {
+				weight = profile.share(sl, f)
 			}
+			score := float64(load+1) / max(0.01, weight)
 			if s.game && recentGame(sl, now) {
 				score *= 8
 			}
@@ -615,7 +627,6 @@ func (s *Scheduler) Snapshot() []SlotStats {
 		}
 		q := sl.quality[probeFamily]
 		st.ProbeRTT, st.ProbeJitter, st.ProbeFail = q.rtt, q.jitter, q.failure
-		st.ProbeLast, st.ProbeOK, st.ProbeSequence, st.ProbeFamily = q.last, q.lastOK, sl.probeSequence[probeFamily], probeFamily
 		st.GameActive = s.game && recentGame(sl, s.now())
 		if cap := sl.gameCap.Load(); cap != nil {
 			st.GameDownMbps, st.GameUpMbps = cap.inMbps, cap.outMbps

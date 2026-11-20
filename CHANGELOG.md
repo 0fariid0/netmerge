@@ -5,6 +5,13 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-20
+
+- Removed the tray's standalone load tests and match reports.
+- Smart routing now learns directional throughput and considers remaining capacity and speed caps.
+- Reduced per-flow scheduling work and track long-lived UDP traffic when balancing.
+- Retained game routing and the existing Windows tray layout.
+
 ## [0.9.0] - 2026-11-20
 
 - Directional, load-aware game caps recover progressively after stable probe samples.

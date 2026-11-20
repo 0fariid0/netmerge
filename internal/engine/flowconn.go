@@ -74,12 +74,16 @@ type slotPacketConn struct {
 	sl               *Slot
 	fam              Family
 	latencySensitive bool
+	scheduler        *Scheduler
+	activity         *flowActivity
+	once             sync.Once
 }
 
 func (c *slotPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	n, a, err := c.PacketConn.ReadFrom(p)
 	if n > 0 {
 		c.sl.bytesIn[c.fam].Add(int64(n))
+		c.activity.bytes.Add(int64(n))
 		if c.latencySensitive {
 			c.sl.noteGame(true, n)
 		} else {
@@ -100,12 +104,22 @@ func (c *slotPacketConn) WriteTo(p []byte, a net.Addr) (int, error) {
 		c.sl.noteGame(false, n)
 	}
 	c.sl.bytesOut[c.fam].Add(int64(n))
+	c.activity.bytes.Add(int64(n))
 	return n, err
 }
 
+func (c *slotPacketConn) Close() error {
+	err := c.PacketConn.Close()
+	c.once.Do(func() {
+		c.scheduler.untrack(c.sl, c.fam, c.activity)
+		c.scheduler.ReleaseFor(c.sl, c.fam)
+	})
+	return err
+}
+
 // ListenUDP opens a UDP socket pinned to one NIC (a UDP "flow" = the socket, so every datagram
-// of that flow leaves the same way). UDP flows are short and numerous (DNS), so they don't hold
-// a balancing slot: the pick still spreads them via the scheduler's tie-breaking.
+// of that flow leaves the same way). Active UDP transfers (including QUIC) count
+// toward the load; the scheduler discounts idle associations.
 func (b *Balancer) ListenUDP(ctx context.Context, f Family, dstPort uint16, dst netip.Addr) (net.PacketConn, error) {
 	network := "udp4"
 	if f == Fam6 {
@@ -126,14 +140,15 @@ func (b *Balancer) ListenUDP(ctx context.Context, f Family, dstPort uint16, dst 
 		tried[sl.key] = struct{}{}
 		lc := net.ListenConfig{Control: nics.ForceEgress(sl.Index, f == Fam6)}
 		pc, err := lc.ListenPacket(ctx, network, net.JoinHostPort(sl.ip(f).String(), "0"))
-		b.S.ReleaseFor(sl, f)
 		if err != nil {
+			b.S.ReleaseFor(sl, f)
 			if classify(err).linkDown {
 				b.S.Fail(sl, f, b.FailCooldown)
 			}
 			lastErr = err
 			continue
 		}
-		return &slotPacketConn{PacketConn: pc, sl: sl, fam: f, latencySensitive: latencySensitive}, nil
+		return &slotPacketConn{PacketConn: pc, sl: sl, fam: f, latencySensitive: latencySensitive,
+			scheduler: b.S, activity: b.S.track(sl, f)}, nil
 	}
 }
