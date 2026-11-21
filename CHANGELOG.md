@@ -5,6 +5,11 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-21
+
+- Added Fast download mode for internet links with very different download speeds.
+- Persisted the selected tray distribution mode and displayed it beside the distribution menu label.
+
 ## [1.0.0] - 2026-11-20
 
 - Removed the tray's standalone load tests and match reports.

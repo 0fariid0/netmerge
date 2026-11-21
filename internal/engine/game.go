@@ -63,6 +63,16 @@ func recentGame(sl *Slot, now time.Time) bool {
 	return last != 0 && now.UnixNano()-last <= int64(gameIdle)
 }
 
+// ValidDistribution reports whether mode names a supported routing policy.
+func ValidDistribution(mode string) bool {
+	switch mode {
+	case "smart", "round-robin", "game", "fast-download":
+		return true
+	default:
+		return false
+	}
+}
+
 // SetDistribution changes only new route choices. Existing sockets stay pinned.
 func (s *Scheduler) SetDistribution(mode string) {
 	s.mu.Lock()
@@ -76,6 +86,7 @@ func (s *Scheduler) SetDistribution(mode string) {
 		s.genericPreference = [2]routePreference{}
 	}
 	s.roundRobin, s.game = roundRobin, game
+	s.fastDownload = mode == "fast-download"
 	if !game {
 		for _, sl := range s.slots {
 			sl.gameCap.Store(nil)

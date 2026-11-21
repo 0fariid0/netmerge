@@ -121,3 +121,52 @@ func (p trafficProfile) share(sl *Slot, f Family) float64 {
 	}
 	return score / total
 }
+
+// chooseFastDownload only admits slower links once the leading measured link
+// is busy and an alternative has enough headroom to help.
+func chooseFastDownload(pool []*Slot, family Family) *Slot {
+	const busyFraction = 0.85
+	const minimumUsefulRate = 0.5 * bytesPerMbit
+
+	var fastest *Slot
+	var peak float64
+	for _, link := range pool {
+		if rate := link.measuredCapacity(family, 0); rate > peak {
+			fastest, peak = link, rate
+		}
+	}
+	if fastest == nil {
+		return nil // smart scheduling while links are still being measured
+	}
+
+	primaryLoad := fastest.downloadLoad()
+	if primaryLoad < busyFraction*peak {
+		return fastest
+	}
+	best := fastest
+	bestSpare := max(minimumUsefulRate, peak-primaryLoad)
+	for _, link := range pool {
+		if link == fastest {
+			continue
+		}
+		capacity := link.measuredCapacity(family, 0)
+		if capacity == 0 {
+			// Sample unknown links opportunistically when the known primary is busy.
+			if link.busy(family) > 0 || link.fastPicks[family] > 0 {
+				continue
+			}
+			capacity = link.cappedCapacity(0, peak*0.10)
+		}
+		// Until the next sample, spreading new overflow across useful links
+		// prevents a burst from all seeing the same spare capacity.
+		spare := (capacity - link.downloadLoad()) / float64(1+link.fastPicks[family])
+		if spare > bestSpare {
+			best, bestSpare = link, spare
+		}
+	}
+	return best
+}
+
+func (sl *Slot) downloadLoad() float64 {
+	return max(sl.linkRateIn, sl.rateIn[Fam4]+sl.rateIn[Fam6])
+}

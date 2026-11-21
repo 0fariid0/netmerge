@@ -137,16 +137,29 @@ func (u *trayUI) onReady() {
 	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", u.mode == "smart")
 	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.mode == "round-robin")
 	game := distribution.AddSubMenuItemCheckbox("Game mode", "Low-latency UDP path and automatic headroom for bulk traffic", u.mode == "game")
+	fast := distribution.AddSubMenuItemCheckbox("Fast download", "Favors the fastest download link until another link has useful spare capacity", u.mode == "fast-download")
+	modeItems := map[string]*systray.MenuItem{"smart": smart, "round-robin": roundRobin, "game": game, "fast-download": fast}
+	updateDistribution := func() {
+		title := u.text("Connection distribution", "حالت توزیع اتصال")
+		distribution.SetTitle(title + " (" + u.distributionLabel() + ")")
+	}
 	setMode := func(mode string) {
+		if err := state.SaveDistribution(u.stateDir, mode); err != nil {
+			u.lastErr = u.text("Could not save distribution mode", "ذخیرهٔ حالت توزیع ناموفق بود")
+			logx.Printf("save distribution: %v\n", err)
+			return
+		}
 		u.mode = mode
 		u.sched.SetDistribution(mode)
-		for name, item := range map[string]*systray.MenuItem{"smart": smart, "round-robin": roundRobin, "game": game} {
+		u.lastErr = ""
+		for name, item := range modeItems {
 			if name == mode {
 				item.Check()
 			} else {
 				item.Uncheck()
 			}
 		}
+		updateDistribution()
 	}
 	u.signInItem = systray.AddMenuItemCheckbox("Start at sign-in", "Starts net-merge when you sign in, with no password or admin prompt.", platform.AutostartEnabled())
 	u.toggleItem = systray.AddMenuItem("Start merging", "")
@@ -155,10 +168,11 @@ func (u *trayUI) onReady() {
 	language := systray.AddMenuItem(u.text("فارسی", "English"), "")
 	localize(u.v6Item, "Use all adapters (IPv6 only if every adapter has it)", "استفاده از همهٔ شبکه‌ها (IPv6 در صورت پشتیبانی همه)")
 	localize(u.autoItem, "Pause when there is only one connection", "توقف خودکار با یک اتصال")
-	localize(distribution, "Connection distribution", "حالت توزیع اتصال")
 	localize(smart, "Smart (weighted)", "هوشمند (وزنی)")
 	localize(roundRobin, "Round robin", "نوبتی")
 	localize(game, "Game mode", "حالت بازی")
+	localize(fast, "Fast download", "دانلود سریع")
+	updateDistribution()
 	localize(u.signInItem, "Start at sign-in", "شروع با ورود به ویندوز")
 	localize(quit, "Quit", "خروج")
 	localize(language, "فارسی", "English")
@@ -192,6 +206,7 @@ func (u *trayUI) onReady() {
 				for _, label := range labels {
 					label.item.SetTitle(u.text(label.english, label.persian))
 				}
+				updateDistribution()
 				u.lastOn = nil
 			case <-u.toggleItem.ClickedCh:
 				u.manual(!u.tun.IsOn())
@@ -203,17 +218,13 @@ func (u *trayUI) onReady() {
 				}
 				u.ap.setEnabled(u.autoItem.Checked(), u.tun.IsOn())
 			case <-smart.ClickedCh:
-				if u.mode != "smart" {
-					setMode("smart")
-				}
+				setMode("smart")
 			case <-roundRobin.ClickedCh:
-				if u.mode != "round-robin" {
-					setMode("round-robin")
-				}
+				setMode("round-robin")
 			case <-game.ClickedCh:
-				if u.mode != "game" {
-					setMode("game")
-				}
+				setMode("game")
+			case <-fast.ClickedCh:
+				setMode("fast-download")
 			case <-u.signInItem.ClickedCh:
 				on := !u.signInItem.Checked()
 				u.lastErr = ""
@@ -322,6 +333,19 @@ func (u *trayUI) setHeader(s string) {
 	if s != u.lastHeader {
 		u.header.SetTitle(s)
 		u.lastHeader = s
+	}
+}
+
+func (u *trayUI) distributionLabel() string {
+	switch u.mode {
+	case "round-robin":
+		return u.text("Round robin", "نوبتی")
+	case "game":
+		return u.text("Game mode", "حالت بازی")
+	case "fast-download":
+		return u.text("Fast download", "دانلود سریع")
+	default:
+		return u.text("Smart", "هوشمند")
 	}
 }
 

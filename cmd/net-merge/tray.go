@@ -53,6 +53,20 @@ func cmdTray(args []string) {
 		die(err)
 	}
 
+	explicitDistribution := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "distribution" {
+			explicitDistribution = true
+		}
+	})
+	if !explicitDistribution {
+		if saved, err := state.LoadDistribution(c.stateDir); err != nil {
+			logx.Printf("warning: %v (using default distribution)\n", err)
+		} else if saved != "" {
+			c.distribution = saved
+		}
+	}
+
 	t := tun.New(nil)
 	t.MTU = c.mtu
 	mode := func() string {

@@ -73,3 +73,34 @@ func TestUDPAssociationAccountsForLifetime(t *testing.T) {
 		t.Fatal("closing the association should release its counters exactly once")
 	}
 }
+
+func TestFastDownloadKeepsSlowLinkForUsefulOverflow(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("fast", "127.0.0.2", 1), nic("slow", "127.0.0.3", 1)})
+	s.SetDistribution("fast-download")
+	fast, slow := s.slots[0], s.slots[1]
+	fast.capacity[Fam4][0].estimate = 100 * bytesPerMbit
+	slow.capacity[Fam4][0].estimate = 5 * bytesPerMbit
+	for _, load := range []float64{0, 60, 91} {
+		fast.linkRateIn = load * bytesPerMbit
+		if got := s.Acquire(nil); got != fast {
+			t.Fatalf("fast link at %.0f Mbps should still have room", load)
+		}
+		s.Release(fast)
+	}
+	fast.linkRateIn = 99 * bytesPerMbit
+	if got := s.Acquire(nil); got != slow {
+		t.Fatal("useful spare capacity on the slower link should be used under load")
+	}
+	s.Release(slow)
+	slow.linkRateIn = 4.99 * bytesPerMbit
+	if got := s.Acquire(nil); got != fast {
+		t.Fatal("slow link with no useful headroom should not receive overflow")
+	}
+	s.Release(fast)
+	s.SetState(fast, Fam4, false)
+	s.SetState(slow, Fam4, true)
+	if got := s.Acquire(nil); got != slow {
+		t.Fatal("healthy slow link must still be used when the primary fails")
+	}
+	s.Release(slow)
+}

@@ -32,11 +32,18 @@ Smart distribution learns download and upload capacity separately from ordinary 
 current adapter load, recent throughput and configured caps when choosing a link for a new connection.
 Unmeasured links can still receive traffic. Existing connections stay on the link that opened them.
 
-## Publish v1.0.0
+### Fast download
+
+The tray's **Fast download** mode prefers the best measured download link. When that link gets busy,
+new connections can use another link with useful spare capacity. Until measurements exist, it uses
+Smart routing. Existing connections keep their assigned adapter. The tray remembers the selected
+mode on restart. An explicit `-distribution` startup option takes precedence for that session.
+
+## Publish v1.1.0
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.0.0` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.1.0` with PowerShell.

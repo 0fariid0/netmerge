@@ -72,6 +72,7 @@ type Slot struct {
 	peak            [2]float64 // observed capacity: max recent rateIn+rateOut
 	flows           [2]map[*flowActivity]struct{}
 	idleCount       [2]int64
+	fastPicks       [2]int
 	capacity        [2][2]directionCapacity
 
 	// The adapter's total traffic from the OS's counters (all apps, not only net-merge's flows).
@@ -154,6 +155,7 @@ type Scheduler struct {
 	slots              []*Slot
 	auto               bool
 	roundRobin         bool
+	fastDownload       bool
 	destinations       map[netip.Addr]*destinationRoute
 	destinationBatches int
 	genericPreference  [2]routePreference
@@ -375,6 +377,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			sl.lastIn[f], sl.lastOut[f] = in, out
 			// The directional estimates only use traffic observed on this link.
 			sl.sampleCapacity(f, sec)
+			sl.fastPicks[f] = 0
 			r := sl.rateIn[f] + sl.rateOut[f]
 			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] {
 				if sl.peak[f] == 0 {
@@ -511,7 +514,13 @@ func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, laten
 		if len(skip) == 0 {
 			s.next[f]++
 		}
-	} else {
+	} else if s.fastDownload {
+		best = chooseFastDownload(pool, f)
+		if best != nil {
+			best.fastPicks[f]++
+		}
+	}
+	if best == nil {
 		// Random start so ties don't resonate with the arrival pattern (a rotating counter can
 		// lock onto e.g. "every third flow is a short DNS-like one" and starve an adapter).
 		start := rand.IntN(len(pool))
