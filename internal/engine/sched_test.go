@@ -515,3 +515,28 @@ func TestRoundRobinNewFlows(t *testing.T) {
 		s.Release(slot)
 	}
 }
+
+func TestRoundRobinKeepsItsPlaceWhenLinkGoesDown(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("A", "127.0.0.2", 1), nic("B", "127.0.0.3", 5), nic("C", "127.0.0.4", 2)})
+	s.SetDistribution("round-robin")
+	a, b, c := s.slots[0], s.slots[1], s.slots[2]
+	for _, slot := range s.slots {
+		s.SetState(slot, Fam4, true)
+	}
+	check := func(want *Slot, skip map[string]struct{}) {
+		t.Helper()
+		got := s.Acquire(skip)
+		if got != want {
+			t.Fatalf("got %v, want %s", got, want.Name)
+		}
+		s.Release(got)
+	}
+	check(a, nil)
+	check(b, nil)
+	s.SetState(b, Fam4, false)
+	check(c, map[string]struct{}{b.key: {}})
+	check(c, nil)
+	s.SetState(b, Fam4, true)
+	check(a, nil)
+	check(b, nil)
+}

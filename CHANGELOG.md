@@ -5,6 +5,12 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-11-25
+
+- Give Game mode a separate bulk route whenever a link outside the game session has spare capacity.
+- Keep Round robin in sequence when links become unavailable and during connection retries.
+- Give Fast download its own download-capacity learning at startup and preserve Smart's mixed download/upload balancing.
+
 ## [1.2.4] - 2026-11-25
 
 - Avoid locking download mode to the first measured link and avoid treating short or slow transfers as sustained capacity changes.

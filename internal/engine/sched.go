@@ -55,6 +55,7 @@ type Slot struct {
 	limit                 atomic.Pointer[limitPair] // nil = unlimited; see limit.go
 
 	// guarded by Scheduler.mu
+	order           uint64
 	quality         [2]linkQuality
 	probeSequence   [2]uint64
 	gamePeak        [2]float64
@@ -165,7 +166,8 @@ type Scheduler struct {
 	probeRevision      [2]uint64
 	lastGameRoute      GameRoute
 	game               bool
-	next               [2]uint64
+	roundRobinLast     [2]uint64
+	lastSlotOrder      uint64
 	limits             map[string]float64 // adapter name -> Mbit/s, 0 or absent = unlimited
 	now                func() time.Time
 }
@@ -268,7 +270,8 @@ func (s *Scheduler) Update(nics []nics.Nic) {
 			}
 		}
 		if found == nil {
-			sl := &Slot{Name: n.Name, Index: n.Index, key: n.Name, weight: [2]float64{n.Weight, n.Weight}, present: true}
+			s.lastSlotOrder++
+			sl := &Slot{Name: n.Name, Index: n.Index, key: n.Name, weight: [2]float64{n.Weight, n.Weight}, present: true, order: s.lastSlotOrder}
 			sl.addr.Store(na)
 			sl.setLimit(s.limits[n.Name])
 			s.slots = append(s.slots, sl)
@@ -546,29 +549,36 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 		}
 		s.lastGameRoute = GameRoute{Adapter: best.Name, Basis: basis, Destination: dst, At: now}
 	} else if best == nil && s.roundRobin {
-		best = pool[s.next[f]%uint64(len(pool))]
+		best = pool[0]
+		for _, sl := range pool {
+			if sl.order > s.roundRobinLast[f] {
+				best = sl
+				break
+			}
+		}
 		// A retry must not consume a new connection's turn.
 		if len(skip) == 0 {
-			s.next[f]++
+			s.roundRobinLast[f] = best.order
 		}
 	} else if best == nil && s.fastDownload {
 		if len(skip) == 0 {
 			s.downloadChoices[f]++
 		}
 		best = chooseFastDownload(pool, f, now, len(skip) == 0 && s.downloadChoices[f]%8 == 0)
-		if best != nil {
-			best.fastPicks[f]++
-		}
+		best.fastPicks[f]++
 	}
 	if best == nil {
+		profile := trafficProfile{}
+		if s.auto || s.game {
+			profile = measureDemand(pool, f)
+		}
+		if s.game {
+			pool = gameBulkPool(pool, f, now, profile)
+		}
 		// Random start so ties don't resonate with the arrival pattern (a rotating counter can
 		// lock onto e.g. "every third flow is a short DNS-like one" and starve an adapter).
 		start := rand.IntN(len(pool))
 		bestScore := math.Inf(1)
-		profile := trafficProfile{}
-		if s.auto {
-			profile = measureDemand(pool, f)
-		}
 		for i := range pool {
 			sl := pool[(start+i)%len(pool)]
 			load := sl.actF[f].Load()

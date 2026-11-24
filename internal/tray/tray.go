@@ -132,7 +132,7 @@ func (u *trayUI) onReady() {
 	u.v6Item = systray.AddMenuItemCheckbox("Use all adapters (IPv6 only if every adapter has it)", "Ticked: apps are pushed to IPv4 so every adapter is used. Unticked: IPv6 is allowed and funnels onto the adapters that have it.", u.bal.V6Mode() == engine.V6Auto)
 	u.autoItem = systray.AddMenuItemCheckbox("Pause when there is only one connection", "Pauses merging by itself when fewer than two connections have internet, and starts it again when a second one works. Pausing or starting by hand always wins.", u.ap.enabled)
 	distribution := systray.AddMenuItem("Connection distribution", "Applies to new TCP and UDP flows")
-	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Uses the original scheduler", u.mode == "smart")
+	smart := distribution.AddSubMenuItemCheckbox("Smart (weighted)", "Balances new flows by download and upload capacity and current load", u.mode == "smart")
 	roundRobin := distribution.AddSubMenuItemCheckbox("Round robin", "Alternates new flows across available adapters", u.mode == "round-robin")
 	game := distribution.AddSubMenuItemCheckbox("Game mode", "Low-latency UDP path and automatic headroom for bulk traffic", u.mode == "game")
 	fast := distribution.AddSubMenuItemCheckbox("Fast download", "Favors the fastest download link until another link has useful spare capacity", u.mode == "fast-download")

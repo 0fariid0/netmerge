@@ -116,8 +116,8 @@ func (p trafficProfile) share(sl *Slot, f Family) float64 {
 	// Physical adapter counters include other programs and traffic in the
 	// other address family. Relayed counters cover systems without OS counters.
 	utilization := [2]float64{
-		max(sl.linkRateIn, sl.rateIn[Fam4]+sl.rateIn[Fam6]),
-		max(sl.linkRateOut, sl.rateOut[Fam4]+sl.rateOut[Fam6]),
+		sl.transferLoad(0),
+		sl.transferLoad(1),
 	}
 	var score float64
 	for i, mix := range p.mix {
@@ -152,7 +152,17 @@ func chooseFastDownload(pool []*Slot, family Family, now time.Time, explore bool
 		}
 	}
 	if fastest == nil {
-		return nil // smart scheduling while links are still being measured
+		// Spread a bounded burst across links while learning download capacity.
+		// Recent picks represent work that has not appeared in traffic samples yet.
+		candidate := pool[0]
+		for _, link := range pool[1:] {
+			load := link.busy(family) + int64(link.fastPicks[family])
+			candidateLoad := candidate.busy(family) + int64(candidate.fastPicks[family])
+			if load < candidateLoad || (load == candidateLoad && link.transferLoad(0) < candidate.transferLoad(0)) {
+				candidate = link
+			}
+		}
+		return candidate
 	}
 
 	// Even a lightly loaded known link must not starve an unmeasured or
@@ -175,7 +185,7 @@ func chooseFastDownload(pool []*Slot, family Family, now time.Time, explore bool
 			return candidate
 		}
 	}
-	primaryLoad := fastest.downloadLoad()
+	primaryLoad := fastest.transferLoad(0)
 	if primaryLoad < busyFraction*peak {
 		return fastest
 	}
@@ -195,7 +205,7 @@ func chooseFastDownload(pool []*Slot, family Family, now time.Time, explore bool
 		}
 		// Until the next sample, spreading new overflow across useful links
 		// prevents a burst from all seeing the same spare capacity.
-		spare := (capacity - link.downloadLoad()) / float64(1+link.fastPicks[family])
+		spare := (capacity - link.transferLoad(0)) / float64(1+link.fastPicks[family])
 		if spare > bestSpare {
 			best, bestSpare = link, spare
 		}
@@ -203,6 +213,9 @@ func chooseFastDownload(pool []*Slot, family Family, now time.Time, explore bool
 	return best
 }
 
-func (sl *Slot) downloadLoad() float64 {
+func (sl *Slot) transferLoad(direction int) float64 {
+	if direction == 1 {
+		return max(sl.linkRateOut, sl.rateOut[Fam4]+sl.rateOut[Fam6])
+	}
 	return max(sl.linkRateIn, sl.rateIn[Fam4]+sl.rateIn[Fam6])
 }

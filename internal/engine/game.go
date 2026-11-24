@@ -68,6 +68,37 @@ func recentGame(sl *Slot, now time.Time) bool {
 	return last != 0 && now.UnixNano()-last <= int64(gameIdle)
 }
 
+func gameBulkPool(pool []*Slot, family Family, now time.Time, profile trafficProfile) []*Slot {
+	protected := false
+	for _, sl := range pool {
+		if recentGame(sl, now) {
+			protected = true
+			break
+		}
+	}
+	if !protected || len(pool) == 1 {
+		return pool
+	}
+	direction := 0
+	if profile.mix[1] > profile.mix[0] {
+		direction = 1
+	}
+	var alternatives []*Slot
+	for _, sl := range pool {
+		if recentGame(sl, now) {
+			continue
+		}
+		capacity := sl.measuredCapacity(family, direction)
+		if capacity == 0 && sl.busy(family) == 0 || capacity > 0 && sl.transferLoad(direction) < 0.85*capacity {
+			alternatives = append(alternatives, sl)
+		}
+	}
+	if len(alternatives) > 0 {
+		return alternatives
+	}
+	return pool
+}
+
 // ValidDistribution reports whether mode names a supported routing policy.
 func ValidDistribution(mode string) bool {
 	switch mode {
@@ -84,7 +115,7 @@ func (s *Scheduler) SetDistribution(mode string) {
 	defer s.mu.Unlock()
 	roundRobin, game := mode == "round-robin", mode == "game"
 	if s.roundRobin != roundRobin {
-		s.next = [2]uint64{}
+		s.roundRobinLast = [2]uint64{}
 	}
 	if game != s.game {
 		s.lastGameRoute = GameRoute{}

@@ -135,3 +135,49 @@ func TestFastDownloadLearnsStrongerUnmeasuredLink(t *testing.T) {
 	}
 	s.Release(fast)
 }
+
+func TestDistributionPoliciesOnTheSameUnequalLinks(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("USB", "127.0.0.2", 1), nic("Wi-Fi", "127.0.0.3", 1)})
+	s.SetAuto(true)
+	usb, wifi := s.slots[0], s.slots[1]
+	usb.capacity[Fam4][0].estimate, usb.capacity[Fam4][1].estimate = 100*bytesPerMbit, 2*bytesPerMbit
+	wifi.capacity[Fam4][0].estimate, wifi.capacity[Fam4][1].estimate = 5*bytesPerMbit, 40*bytesPerMbit
+	usb.quality[Fam4] = linkQuality{rtt: 40 * time.Millisecond, jitter: 24 * time.Millisecond, sampled: true}
+	wifi.quality[Fam4] = linkQuality{rtt: 32 * time.Millisecond, jitter: 2 * time.Millisecond, sampled: true}
+	wifi.rateOut[Fam4] = 2 * bytesPerMbit
+
+	check := func(want *Slot, latencySensitive bool) {
+		t.Helper()
+		got := s.acquireFor(Fam4, nil, latencySensitive)
+		if got != want {
+			t.Fatalf("got %v, want %s", got, want.Name)
+		}
+		s.Release(got)
+	}
+	s.SetDistribution("smart")
+	check(wifi, false)
+	s.SetDistribution("round-robin")
+	check(usb, false)
+	check(wifi, false)
+	check(usb, false)
+	s.SetDistribution("game")
+	check(wifi, true)
+	wifi.lastGame.Store(s.now().UnixNano())
+	check(usb, false)
+	s.SetDistribution("fast-download")
+	check(usb, false)
+	usb.linkRateIn = 99 * bytesPerMbit
+	check(wifi, false)
+}
+
+func TestFastDownloadWithoutMeasurementsSamplesOtherLinks(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("USB", "127.0.0.2", 10), nic("Wi-Fi", "127.0.0.3", 1)})
+	s.SetDistribution("fast-download")
+	for _, want := range []*Slot{s.slots[0], s.slots[1]} {
+		got := s.Acquire(nil)
+		if got != want {
+			t.Fatalf("got %v, want a sample on %s", got, want.Name)
+		}
+		s.Release(got)
+	}
+}

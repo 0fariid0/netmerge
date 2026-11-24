@@ -33,6 +33,27 @@ func TestGameSteersNewUDPAndBulk(t *testing.T) {
 	s.Release(fast)
 }
 
+func TestGameReservesEvenTheFasterLinkWhenAlternativeHasRoom(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("USB", "127.0.0.2", 1), nic("Wi-Fi", "127.0.0.3", 1)})
+	s.SetAuto(true)
+	s.SetDistribution("game")
+	usb, wifi := s.slots[0], s.slots[1]
+	usb.capacity[Fam4][0].estimate = 100 * bytesPerMbit
+	wifi.capacity[Fam4][0].estimate = 5 * bytesPerMbit
+	usb.lastGame.Store(s.now().UnixNano())
+	got := s.Acquire(nil)
+	if got != wifi {
+		t.Fatal("a slow link with spare capacity should carry bulk while the fast link carries game traffic")
+	}
+	s.Release(got)
+	wifi.linkRateIn = 5 * bytesPerMbit
+	got = s.Acquire(nil)
+	if got != usb {
+		t.Fatal("when the alternate link is full, the protected link should still be usable")
+	}
+	s.Release(got)
+}
+
 func TestGameCapReservesAndClearsHeadroom(t *testing.T) {
 	s := NewScheduler([]nics.Nic{nic("shared", "127.0.0.2", 1)})
 	sl := s.slots[0]
