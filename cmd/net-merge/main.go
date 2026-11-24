@@ -261,7 +261,7 @@ func main() {
 		if len(args) != 1 {
 			os.Exit(2)
 		}
-		if err := os.WriteFile(args[0], icon.ICO(true), 0o644); err != nil {
+		if err := os.WriteFile(args[0], icon.ICO(), 0o644); err != nil {
 			die(err)
 		}
 	case "tray":

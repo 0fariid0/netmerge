@@ -1,4 +1,4 @@
 package icon
 
-// Tray is the icon in the format the tray library expects on this OS.
-func Tray(on bool) []byte { return ICO(on) }
+// Tray returns the icon in the Windows tray library's format.
+func Tray() []byte { return ICO() }

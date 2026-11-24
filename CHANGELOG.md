@@ -5,6 +5,11 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-24
+
+- Use the new NetMerge logo for the tray, Windows executables, setup, uninstall and shortcuts.
+- Updated the documentation and packaged desktop icons to match.
+
 ## [1.2.0] - 2026-11-24
 
 - Retry new TCP connections independently by destination and pin successful fallback paths temporarily.

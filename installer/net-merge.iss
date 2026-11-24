@@ -31,6 +31,7 @@ LicenseFile=LICENSE
 SourceDir=..
 OutputDir=dist
 OutputBaseFilename=net-merge-setup-{#Version}
+SetupIconFile=dist\net-merge.ico
 UninstallDisplayIcon={app}\net-merge.ico
 CloseApplications=no
 ; Uninstall removes %LOCALAPPDATA%\net-merge (status/log files) of the user who installed.

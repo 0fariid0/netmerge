@@ -25,7 +25,7 @@ Invoke-Native 'go test' { go test ./... }
 # Version info, icon and manifest for each exe: antivirus ML models flag bare unsigned Go exes
 # (Microsoft's Trojan:Win32/Wacatac.B!ml).
 function New-Resources([string]$Exe, [string]$Description) {
-    Invoke-Native "resources $Exe" { go run github.com/tc-hib/go-winres@v0.3.3 simply --arch amd64 --out cmd\net-merge\rsrc --icon packaging\icons\hicolor\256x256\apps\net-merge.png --manifest cli --product-name NetMerge --file-description $Description --original-filename $Exe --product-version $Version --file-version $Version --copyright 'net-merge contributors' }
+    Invoke-Native "resources $Exe" { go run github.com/tc-hib/go-winres@v0.3.3 simply --arch amd64 --out cmd\net-merge\rsrc --icon internal\icon\net-merge.ico --manifest cli --product-name NetMerge --file-description $Description --original-filename $Exe --product-version $Version --file-version $Version --copyright 'net-merge contributors' }
 }
 
 # One source, two exes: a console CLI, and a windowless build that defaults to the tray.
@@ -50,5 +50,5 @@ if ($RepoUrl) { $isccArgs += "/DRepoUrl=$RepoUrl" }
 Invoke-Native 'inno setup' { & $iscc @isccArgs installer\net-merge.iss }
 
 $portable = "dist\net-merge-$Version-portable.zip"
-Compress-Archive -Path dist\net-merge.exe, dist\net-merge-tray.exe, dist\wintun.dll, dist\wintun-LICENSE.txt, LICENSE, THIRD-PARTY-NOTICES.md, README.md -DestinationPath $portable
+Compress-Archive -Path dist\net-merge.ico, dist\net-merge.exe, dist\net-merge-tray.exe, dist\wintun.dll, dist\wintun-LICENSE.txt, LICENSE, THIRD-PARTY-NOTICES.md, README.md -DestinationPath $portable
 Get-ChildItem dist\net-merge-setup-$Version.exe, $portable | ForEach-Object { '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB) }

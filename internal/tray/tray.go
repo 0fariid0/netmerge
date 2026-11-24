@@ -1,4 +1,4 @@
-// Package tray is the notification-area icon: green/grey for on/off, live speeds on hover, and
+// Package tray is the notification-area icon: live speeds on hover, and
 // a menu to pause, change the IPv6 mode, start at sign-in or quit.
 package tray
 
@@ -29,7 +29,7 @@ const trayRows = 4 // adapters shown in the menu; extra rows stay hidden
 // startOn it merges as soon as it can (at once, or, with autoPause, once two connections work).
 func Run(t *tun.Tun, sched *engine.Scheduler, bal *engine.Balancer, stateDir, version string, startOn, autoPause bool, mode string, ready chan struct{}) {
 	ui := &trayUI{tun: t, sched: sched, bal: bal, stateDir: stateDir, version: version, startOn: startOn,
-		iconOn: icon.Tray(true), iconOff: icon.Tray(false), ready: ready}
+		ready: ready}
 	ui.ap.enabled = autoPause
 	ui.mode = mode
 	ui.languagePath = filepath.Join(stateDir, "ui-language")
@@ -53,8 +53,6 @@ type trayUI struct {
 	mode         string
 	persian      bool
 	languagePath string
-	iconOn       []byte
-	iconOff      []byte
 	ready        chan struct{} // closed once the tray icon exists
 
 	ap autoPauser
@@ -85,7 +83,7 @@ func (u *trayUI) onReady() {
 	if u.ready != nil {
 		close(u.ready)
 	}
-	systray.SetIcon(u.iconOff)
+	systray.SetIcon(icon.Tray())
 	systray.SetTooltip("net-merge")
 	u.header = systray.AddMenuItem("net-merge", "")
 	u.header.Disable()
@@ -371,10 +369,8 @@ func (u *trayUI) refresh() {
 	on := u.tun.IsOn()
 	if u.lastOn == nil || *u.lastOn != on {
 		if on {
-			systray.SetIcon(u.iconOn)
 			u.toggleItem.SetTitle(u.text("Pause merging", "توقف ادغام"))
 		} else {
-			systray.SetIcon(u.iconOff)
 			u.toggleItem.SetTitle(u.text("Start merging", "شروع ادغام"))
 		}
 		u.lastOn = &on

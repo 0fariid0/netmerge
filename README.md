@@ -1,5 +1,7 @@
 # NetMerge Windows
 
+<img src="docs/icon.png" alt="NetMerge logo" width="96">
+
 Windows x64 distribution based on [net-merge v0.3.7](https://github.com/net-merge/net-merge/tree/v0.3.7).
 The upstream MIT license and third-party notices are included.
 
@@ -50,11 +52,11 @@ when another adapter is confirmed to work. Notices are rate-limited.
 This applies to new TCP connections. UDP and HTTP/3 use different reachability semantics. A TCP
 connection that succeeds but later returns an HTTP or TLS error is outside TCP connect failover.
 
-## Publish v1.2.0
+## Publish v1.2.1
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.2.0` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.2.1` with PowerShell.
