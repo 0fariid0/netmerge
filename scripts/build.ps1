@@ -22,10 +22,38 @@ New-Item -ItemType Directory dist | Out-Null
 Invoke-Native 'go vet'  { go vet ./... }
 Invoke-Native 'go test' { go test ./... }
 
-# Version info, icon and manifest for each exe: antivirus ML models flag bare unsigned Go exes
-# (Microsoft's Trojan:Win32/Wacatac.B!ml).
+# Install the pinned resource compiler once for both executables.
+function Install-ResourceCompiler {
+    $toolDir = Join-Path (Get-Location).Path 'dist\build-tools'
+    New-Item -ItemType Directory -Force $toolDir | Out-Null
+    $previousBin = $env:GOBIN
+    $previousProxy = $env:GOPROXY
+    $PSNativeCommandUseErrorActionPreference = $false
+    try {
+        $env:GOBIN = $toolDir
+        if ([string]::IsNullOrEmpty($previousProxy)) {
+            $env:GOPROXY = 'https://proxy.golang.org|direct'
+        }
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            go install github.com/tc-hib/go-winres@v0.3.3 | Out-Host
+            if ($LASTEXITCODE -eq 0) {
+                return (Join-Path $toolDir 'go-winres.exe')
+            }
+            if ($attempt -lt 3) {
+                Write-Warning "go-winres install failed (attempt $attempt of 3). Retrying..."
+                Start-Sleep -Seconds (2 * $attempt)
+            }
+        }
+        throw "Installing go-winres failed after 3 attempts (exit $LASTEXITCODE)"
+    } finally {
+        $env:GOBIN = $previousBin
+        $env:GOPROXY = $previousProxy
+    }
+}
+
+$winres = Install-ResourceCompiler
 function New-Resources([string]$Exe, [string]$Description) {
-    Invoke-Native "resources $Exe" { go run github.com/tc-hib/go-winres@v0.3.3 simply --arch amd64 --out cmd\net-merge\rsrc --icon internal\icon\net-merge.ico --manifest cli --product-name NetMerge --file-description $Description --original-filename $Exe --product-version $Version --file-version $Version --copyright 'net-merge contributors' }
+    Invoke-Native "resources $Exe" { & $winres simply --arch amd64 --out cmd\net-merge\rsrc --icon internal\icon\net-merge.ico --manifest cli --product-name NetMerge --file-description $Description --original-filename $Exe --product-version $Version --file-version $Version --copyright 'net-merge contributors' }
 }
 
 # One source, two exes: a console CLI, and a windowless build that defaults to the tray.

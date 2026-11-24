@@ -5,6 +5,10 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-24
+
+- Retry installation of the pinned Windows resource compiler and fall back to the upstream source on Go proxy errors.
+
 ## [1.2.1] - 2026-11-24
 
 - Use the new NetMerge logo for the tray, Windows executables, setup, uninstall and shortcuts.
