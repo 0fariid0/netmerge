@@ -5,6 +5,10 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-24
+
+- Refresh existing desktop shortcuts on upgrade and point Windows shortcuts at a versioned icon file.
+
 ## [1.2.2] - 2026-11-24
 
 - Retry installation of the pinned Windows resource compiler and fall back to the upstream source on Go proxy errors.

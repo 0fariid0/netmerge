@@ -32,7 +32,7 @@ SourceDir=..
 OutputDir=dist
 OutputBaseFilename=net-merge-setup-{#Version}
 SetupIconFile=dist\net-merge.ico
-UninstallDisplayIcon={app}\net-merge.ico
+UninstallDisplayIcon={app}\netmerge-{#Version}.ico
 CloseApplications=no
 ; Uninstall removes %LOCALAPPDATA%\net-merge (status/log files) of the user who installed.
 UsedUserAreasWarning=no
@@ -50,13 +50,15 @@ Source: "dist\net-merge-tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\wintun-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\net-merge.ico"; DestDir: "{app}"; Flags: ignoreversion
+; Use a different icon-cache key after upgrading, including for existing shortcuts.
+Source: "dist\net-merge.ico"; DestDir: "{app}"; DestName: "netmerge-{#Version}.ico"; Flags: ignoreversion
 Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 
 [Icons]
-Name: "{autoprograms}\NetMerge"; Filename: "{app}\net-merge-tray.exe"; IconFilename: "{app}\net-merge.ico"; Comment: "Use all your network adapters at once"
-Name: "{autodesktop}\NetMerge"; Filename: "{app}\net-merge-tray.exe"; IconFilename: "{app}\net-merge.ico"; Tasks: desktopicon
+Name: "{autoprograms}\NetMerge"; Filename: "{app}\net-merge-tray.exe"; IconFilename: "{app}\netmerge-{#Version}.ico"; Comment: "Use all your network adapters at once"
+Name: "{autodesktop}\NetMerge"; Filename: "{app}\net-merge-tray.exe"; IconFilename: "{app}\netmerge-{#Version}.ico"; Check: ShouldCreateDesktopShortcut
 
 [Run]
 Filename: "{app}\net-merge.exe"; Parameters: "autostart on"; Flags: runhidden; Tasks: autostart; StatusMsg: "Enabling start at sign-in..."
@@ -70,6 +72,12 @@ Filename: "{app}\net-merge.exe"; Parameters: "autostart off"; Flags: runhidden; 
 Type: filesandordirs; Name: "{localappdata}\net-merge"
 
 [Code]
+function ShouldCreateDesktopShortcut: Boolean;
+begin
+  Result := WizardIsTaskSelected('desktopicon') or
+    FileExists(ExpandConstant('{autodesktop}\NetMerge.lnk'));
+end;
+
 // Turn net-merge off and make sure no copy is running before files are replaced or removed.
 // Killing it is safe: the TUN adapter and its routes disappear with the process.
 procedure StopNetMerge;
