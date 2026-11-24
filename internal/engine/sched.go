@@ -151,6 +151,8 @@ type SlotStats struct {
 // discounts idle TCP sockets; static mode
 // retains weighted least-open-flows. Data transfer accounting stays lock-free.
 type Scheduler struct {
+	tcpPins            map[tcpEndpoint]tcpPin
+	routeFailovers     chan RouteFailover
 	mu                 sync.Mutex
 	slots              []*Slot
 	auto               bool
@@ -445,6 +447,10 @@ func (s *Scheduler) acquireFor(f Family, skip map[string]struct{}, latencySensit
 }
 
 func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, latencySensitive bool, dst netip.Addr) *Slot {
+	return s.acquireRoute(f, skip, latencySensitive, dst, tcpEndpoint{})
+}
+
+func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySensitive bool, dst netip.Addr, endpoint tcpEndpoint) *Slot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -479,7 +485,21 @@ func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, laten
 		return nil
 	}
 	var best *Slot
-	if s.game && latencySensitive {
+	if endpoint.host != "" {
+		if pin, ok := s.tcpPins[endpoint]; ok {
+			if !now.Before(pin.expires) || !pin.link.present || !pin.source.Equal(pin.link.ip(f)) {
+				delete(s.tcpPins, endpoint)
+			} else {
+				for _, sl := range pool {
+					if sl == pin.link {
+						best = sl
+						break
+					}
+				}
+			}
+		}
+	}
+	if best == nil && s.game && latencySensitive {
 		basis := "general"
 		if r := s.destinations[dst]; r != nil && !r.updated.IsZero() && now.Sub(r.updated) <= 20*time.Second {
 			score := func(sl *Slot) float64 {
@@ -508,13 +528,13 @@ func (s *Scheduler) acquireDestination(f Family, skip map[string]struct{}, laten
 			best = chooseStable(pool, pref, s.probeRevision[f], func(sl *Slot) float64 { return sl.quality[f].score() })
 		}
 		s.lastGameRoute = GameRoute{Adapter: best.Name, Basis: basis, Destination: dst, At: now}
-	} else if s.roundRobin {
+	} else if best == nil && s.roundRobin {
 		best = pool[s.next[f]%uint64(len(pool))]
 		// A retry must not consume a new connection's turn.
 		if len(skip) == 0 {
 			s.next[f]++
 		}
-	} else if s.fastDownload {
+	} else if best == nil && s.fastDownload {
 		best = chooseFastDownload(pool, f)
 		if best != nil {
 			best.fastPicks[f]++

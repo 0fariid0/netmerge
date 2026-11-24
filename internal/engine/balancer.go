@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -118,18 +119,18 @@ func classify(err error) dialClass {
 	case is(wsaeAddrNotAvail, syscall.EADDRNOTAVAIL), is(wsaeNetDown, syscall.ENETDOWN):
 		return dialClass{rep: repNetUnreachable, retry: true, linkDown: true}
 	case is(wsaeNetUnreach, syscall.ENETUNREACH):
-		return dialClass{rep: repNetUnreachable, retry: true, linkDown: true}
+		return dialClass{rep: repNetUnreachable, retry: true}
 	case is(wsaeHostUnreach, syscall.EHOSTUNREACH), is(wsaeTimedOut, syscall.ETIMEDOUT):
 		return dialClass{rep: repHostUnreachable, retry: true}
 	case is(wsaeConnRefused, syscall.ECONNREFUSED):
-		return dialClass{rep: repRefused}
+		return dialClass{rep: repRefused, retry: true}
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
 		return dialClass{rep: repHostUnreachable, retry: true}
 	}
 	return dialClass{rep: repFailure}
 }
 
-// DialTCP connects to host:port over one NIC, failing over to the others on link-level errors.
+// DialTCP connects to host:port over one NIC, retrying another adapter after a retryable failure.
 // On success the caller owns the returned slot and must Relay or Release it.
 func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn, *Slot, Family, error) {
 	// The destination's family decides which NIC address is used; a host name stays IPv4.
@@ -138,25 +139,37 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		f, network = Fam6, "tcp6"
 	}
 	tried := map[string]struct{}{}
+	endpoint := newTCPEndpoint(host, port)
+	var failed []*Slot
 	rep := byte(repFailure)
 	var lastErr error = errors.New("no usable network adapter")
 	if f == Fam6 {
 		rep, lastErr = repNetUnreachable, errors.New("no usable IPv6 adapter")
 	}
 	for {
-		sl := b.S.AcquireFor(f, tried)
+		sl := b.S.acquireRoute(f, tried, false, netip.Addr{}, endpoint)
 		if sl == nil {
 			return nil, nil, f, &dialError{rep: rep, err: lastErr}
 		}
 		tried[sl.key] = struct{}{}
+		source := sl.ip(f)
+		if source == nil {
+			b.S.ReleaseFor(sl, f)
+			lastErr = errors.New("adapter address changed while opening the connection")
+			rep = repNetUnreachable
+			continue
+		}
 		d := net.Dialer{
-			LocalAddr: &net.TCPAddr{IP: sl.ip(f)},            // binding the source IP pins the flow to this NIC
+			LocalAddr: &net.TCPAddr{IP: source},              // binding the source IP pins the flow to this NIC
 			Control:   nics.ForceEgress(sl.Index, f == Fam6), // and this forces egress even if the TUN's routes match
 			Timeout:   b.ConnectTimeout,
 			KeepAlive: 30 * time.Second,
 		}
 		conn, err := d.DialContext(ctx, network, net.JoinHostPort(host, strconv.Itoa(port)))
 		if err == nil {
+			if len(failed) > 0 {
+				b.S.rememberTCP(endpoint, f, failed, sl, source)
+			}
 			return conn, sl, f, nil
 		}
 		b.S.ReleaseFor(sl, f)
@@ -168,6 +181,7 @@ func (b *Balancer) DialTCP(ctx context.Context, host string, port int) (net.Conn
 		if !c.retry || ctx.Err() != nil {
 			return nil, nil, f, &dialError{rep: rep, err: err}
 		}
+		failed = append(failed, sl)
 	}
 }
 

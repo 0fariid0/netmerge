@@ -193,9 +193,20 @@ func (u *trayUI) onReady() {
 		}
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
+		failovers := u.sched.RouteFailovers()
+		var nextNotice time.Time
 		for {
 			u.refresh()
 			select {
+			case event := <-failovers:
+				now := time.Now()
+				if runtime.GOOS == "windows" && !now.Before(nextNotice) {
+					nextNotice = now.Add(5 * time.Second)
+					message := fmt.Sprintf(u.text("NetMerge\n%s could not reach %s\nUsing %s for this destination.",
+						"NetMerge\nاینترنت %s به مقصد %s وصل نشد.\nمسیر این مقصد به %s تغییر کرد."),
+						shorten(event.Failed, 48), shorten(event.Destination, 58), shorten(event.Working, 34))
+					go platform.ShowRouteNotice(message)
+				}
 			case <-language.ClickedCh:
 				pref := u.text("fa", "en")
 				if err := os.WriteFile(u.languagePath, []byte(pref), 0o600); err != nil {

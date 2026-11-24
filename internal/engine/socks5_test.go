@@ -130,7 +130,8 @@ func TestFlowsSplitAcrossNics(t *testing.T) {
 func TestBrokenNicFailsOver(t *testing.T) {
 	port := startTarget(t)
 	// 203.0.113.9 (TEST-NET-3) isn't owned by this machine: bind fails with WSAEADDRNOTAVAIL.
-	sched, proxy := startProxy(t, []nics.Nic{nic("bad", "203.0.113.9", 1), nic("good", "127.0.0.2", 1)})
+	sched, proxy := startProxy(t, []nics.Nic{nic("bad", "203.0.113.9", 10), nic("good", "127.0.0.2", 1)})
+	notices := sched.RouteFailovers()
 	for i := 0; i < 4; i++ {
 		c := socksConnect(t, proxy, port)
 		if c.rep != 0 {
@@ -145,10 +146,19 @@ func TestBrokenNicFailsOver(t *testing.T) {
 			t.Fatalf("bad NIC should be sidelined after one failure, failed=%d", s.Failed)
 		}
 	}
+	select {
+	case event := <-notices:
+		if event.Failed != "bad" || event.Working != "good" {
+			t.Fatalf("unexpected failover notice %+v", event)
+		}
+	default:
+		t.Fatal("successful SOCKS retry did not emit a notice")
+	}
 }
 
-func TestRefusedIsReportedNotRetried(t *testing.T) {
+func TestRefusedIsReportedAfterTryingOtherLinks(t *testing.T) {
 	sched, proxy := startProxy(t, []nics.Nic{nic("a", "127.0.0.2", 1), nic("b", "127.0.0.3", 1)})
+	notices := sched.RouteFailovers()
 	ln, _ := net.Listen("tcp4", "127.0.0.1:0")
 	deadPort := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
@@ -161,8 +171,13 @@ func TestRefusedIsReportedNotRetried(t *testing.T) {
 	for _, s := range sched.Snapshot() {
 		total += s.Total
 	}
-	if total != 1 {
-		t.Fatalf("refusal must not be retried on other NICs, attempts=%d", total)
+	if total != 2 {
+		t.Fatalf("want both links tried before reporting refusal, attempts=%d", total)
+	}
+	select {
+	case event := <-notices:
+		t.Fatalf("with both links failing there is no confirmed fallback: %+v", event)
+	default:
 	}
 }
 

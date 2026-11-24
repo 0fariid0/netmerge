@@ -5,6 +5,11 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-24
+
+- Retry new TCP connections independently by destination and pin successful fallback paths temporarily.
+- Show a short Windows popup when a different adapter is confirmed to work for a destination.
+
 ## [1.1.0] - 2026-11-21
 
 - Added Fast download mode for internet links with very different download speeds.

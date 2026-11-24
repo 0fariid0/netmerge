@@ -39,11 +39,22 @@ new connections can use another link with useful spare capacity. Until measureme
 Smart routing. Existing connections keep their assigned adapter. The tray remembers the selected
 mode on restart. An explicit `-distribution` startup option takes precedence for that session.
 
-## Publish v1.1.0
+### TCP destination failover
+
+When a new TCP connection times out, is refused, or reports a retryable network error, NetMerge
+tries the other available adapters if the request is still active. After a successful retry, it
+prefers that adapter for the same host and port for five minutes. An unreachable, disconnected, or
+reconfigured adapter can be replaced sooner. Windows tray mode shows a short non-activating notice
+when another adapter is confirmed to work. Notices are rate-limited.
+
+This applies to new TCP connections. UDP and HTTP/3 use different reachability semantics. A TCP
+connection that succeeds but later returns an HTTP or TLS error is outside TCP connect failover.
+
+## Publish v1.2.0
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.1.0` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.2.0` with PowerShell.
