@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	destinationPinTTL = 5 * time.Minute
-	destinationPinMax = 1024
+	destinationPinTTL    = 30 * time.Second
+	destinationRepeatTTL = 2 * time.Minute
+	destinationPinMax    = 1024
 )
 
 // TCP pins are keyed by service endpoint. Success on one port is not evidence
@@ -66,7 +67,11 @@ func (s *Scheduler) rememberTCP(endpoint tcpEndpoint, f Family, failed []*Slot, 
 		}
 		delete(s.tcpPins, oldest)
 	}
-	s.tcpPins[endpoint] = tcpPin{link: working, source: source, expires: now.Add(destinationPinTTL)}
+	ttl := destinationPinTTL
+	if prev.link == working && prev.source.Equal(source) && now.Sub(prev.expires) < destinationRepeatTTL {
+		ttl = destinationRepeatTTL
+	}
+	s.tcpPins[endpoint] = tcpPin{link: working, source: source, expires: now.Add(ttl)}
 	if s.routeFailovers != nil {
 		names := make([]string, 0, len(failed))
 		for _, link := range failed {

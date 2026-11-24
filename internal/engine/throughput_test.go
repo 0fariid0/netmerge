@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"net-merge/internal/nics"
 )
@@ -103,4 +104,34 @@ func TestFastDownloadKeepsSlowLinkForUsefulOverflow(t *testing.T) {
 		t.Fatal("healthy slow link must still be used when the primary fails")
 	}
 	s.Release(slow)
+}
+
+func TestFastDownloadLearnsStrongerUnmeasuredLink(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("measured-slow", "127.0.0.2", 1), nic("unmeasured-fast", "127.0.0.3", 1)})
+	s.SetDistribution("fast-download")
+	slow, fast := s.slots[0], s.slots[1]
+	slow.capacity[Fam4][0].estimate = 5 * bytesPerMbit
+	for range 7 {
+		if got := s.Acquire(nil); got != slow {
+			t.Fatal("measured link should get the non-exploratory traffic")
+		}
+		s.Release(slow)
+	}
+	if got := s.Acquire(nil); got != fast {
+		t.Fatal("unmeasured link never received a chance to demonstrate capacity")
+	}
+	s.Release(fast)
+
+	fast.bytesIn[Fam4].Add(100 * bytesPerMbit)
+	s.Tick(time.Second)
+	if fast.capacity[Fam4][0].estimate > 0 {
+		t.Fatal("one sample should not establish stable capacity")
+	}
+	fast.bytesIn[Fam4].Add(100 * bytesPerMbit)
+	s.Tick(time.Second)
+	s.Tick(time.Second) // transfer is done
+	if got := s.Acquire(nil); got != fast {
+		t.Fatal("learned stronger link should be preferred once it has capacity")
+	}
+	s.Release(fast)
 }

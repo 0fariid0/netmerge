@@ -35,6 +35,7 @@ type destinationRoute struct {
 
 type destinationSample struct {
 	ip net.IP
+	at time.Time
 	linkQuality
 }
 
@@ -71,13 +72,21 @@ func (s *Scheduler) prepareDestination(ctx context.Context, f Family, dst netip.
 		r = &destinationRoute{quality: make(map[string]destinationSample)}
 		s.destinations[key] = r
 	}
-	if r.pending || now.Sub(r.updated) < 3*time.Second || s.destinationBatches >= 4 {
+	if r.pending {
+		done, first := r.done, r.updated.IsZero()
+		s.mu.Unlock()
+		if first {
+			waitDestination(ctx, done)
+		}
+		return
+	}
+	if now.Sub(r.updated) < 3*time.Second || s.destinationBatches >= 4 {
 		s.mu.Unlock()
 		return
 	}
 	var links []probeJob
 	for _, sl := range s.slots {
-		if ip := sl.ip(f); sl.present && ip != nil && sl.state[f] != stateDown && !now.Before(sl.downUntil[f]) {
+		if ip := sl.ip(f); sl.present && ip != nil && !now.Before(sl.downUntil[f]) {
 			links = append(links, probeJob{sl, f, ip})
 		}
 	}
@@ -92,9 +101,12 @@ func (s *Scheduler) prepareDestination(ctx context.Context, f Family, dst netip.
 	s.mu.Unlock()
 
 	go s.measureDestination(r, key, links)
-	if haveSample {
-		return
+	if !haveSample {
+		waitDestination(ctx, done)
 	}
+}
+
+func waitDestination(ctx context.Context, done <-chan struct{}) {
 	timer := time.NewTimer(destinationWait)
 	defer timer.Stop()
 	select {
@@ -130,6 +142,7 @@ func (s *Scheduler) measureDestination(r *destinationRoute, dst netip.Addr, link
 			prev = destinationSample{ip: res.job.ip}
 		}
 		prev.update(res.rtt, res.ok)
+		prev.at = s.now()
 		r.quality[key] = prev
 	}
 	r.updated = s.now()
@@ -212,7 +225,12 @@ func chooseStable(pool []*Slot, pref *routePreference, revision uint64, score fu
 		*pref = routePreference{current: best.key, revision: revision}
 		return best
 	}
-	if best == current || score(current)-score(best) < float64(8*time.Millisecond) {
+	currentScore, bestScore := score(current), score(best)
+	if best != current && currentScore-bestScore >= float64(40*time.Millisecond) && bestScore <= 0.65*currentScore {
+		*pref = routePreference{current: best.key, revision: revision}
+		return best
+	}
+	if best == current || currentScore-bestScore < float64(8*time.Millisecond) {
 		pref.candidate, pref.samples, pref.revision = "", 0, revision
 		return current
 	}

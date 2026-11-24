@@ -23,7 +23,7 @@ Start a game session after selecting **Game mode** or set `-distribution game` w
 
 ## Game diagnostics
 
-In Game mode, recent destination ICMP results are used when at least two eligible adapters answer.
+In Game mode, recent destination ICMP results are used when multiple adapters answer, or when one answers and another repeatedly misses.
 If the game destination does not respond on enough links, selection uses the general reachability probes.
 Route changes apply to new connections. The tray shows the selected link and probe source.
 
@@ -45,18 +45,18 @@ mode on restart. An explicit `-distribution` startup option takes precedence for
 
 When a new TCP connection times out, is refused, or reports a retryable network error, NetMerge
 tries the other available adapters if the request is still active. After a successful retry, it
-prefers that adapter for the same host and port for five minutes. An unreachable, disconnected, or
+prefers that adapter for the same host and port for 30 seconds (up to two minutes after a recently repeated failure). An unreachable, disconnected, or
 reconfigured adapter can be replaced sooner. Windows tray mode shows a short non-activating notice
 when another adapter is confirmed to work. Notices are rate-limited.
 
 This applies to new TCP connections. UDP and HTTP/3 use different reachability semantics. A TCP
 connection that succeeds but later returns an HTTP or TLS error is outside TCP connect failover.
 
-## Publish v1.2.3
+## Publish v1.2.4
 
 Extract the source ZIP and run `bash install-release.sh` in Git Bash with GitHub CLI installed.
 It targets `0fariid0/netmerge` and defaults to `$HOME/github-projects/netmerge` for the local checkout.
 Set `REPO` to override the local checkout path. The script pushes the branch and tag, then waits for GitHub Actions
 to build and publish the Windows x64 installer and portable ZIP.
 
-For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.2.3` with PowerShell.
+For local packaging, install Go 1.27 and Inno Setup 6 and run `scripts/build.ps1 -Version 1.2.4` with PowerShell.

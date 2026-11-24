@@ -1,20 +1,30 @@
 package engine
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 type directionCapacity struct {
-	estimate float64
-	reduced  float64 // seconds of sustained slower traffic
+	estimate     float64
+	reduced      float64 // seconds of sustained slower traffic
+	firstRate    float64
+	lastMeasured time.Time
 }
 
 func (d *directionCapacity) sample(rate, seconds float64, busy bool) {
 	if rate < minMeasuredPeak {
 		// Low-volume traffic and idle connections do not define link capacity.
-		d.reduced = 0
+		d.reduced, d.firstRate = 0, 0
 		return
 	}
 	if d.estimate == 0 {
-		d.estimate = rate
+		if d.firstRate == 0 {
+			d.firstRate = rate
+			return
+		}
+		d.estimate = min(d.firstRate, rate)
+		d.firstRate = 0
 		return
 	}
 	tau := 18.0
@@ -29,11 +39,14 @@ func (d *directionCapacity) sample(rate, seconds float64, busy bool) {
 		}
 	default:
 		d.reduced = 0
+		if !busy {
+			return // a slow server or a short transfer doesn't establish a lower capacity
+		}
 	}
 	d.estimate += (rate - d.estimate) * (1 - math.Exp(-seconds/tau))
 }
 
-func (sl *Slot) sampleCapacity(f Family, seconds float64) {
+func (sl *Slot) sampleCapacity(f Family, seconds float64, now time.Time) {
 	busy := sl.busy(f) > 1
 	rates := [2]float64{sl.rateIn[f], sl.rateOut[f]}
 	for i, rate := range rates {
@@ -44,6 +57,9 @@ func (sl *Slot) sampleCapacity(f Family, seconds float64) {
 			continue
 		}
 		d.sample(rate, seconds, busy)
+		if rate >= minMeasuredPeak && d.estimate > 0 && rate >= 0.75*d.estimate {
+			d.lastMeasured = now
+		}
 	}
 }
 
@@ -124,7 +140,7 @@ func (p trafficProfile) share(sl *Slot, f Family) float64 {
 
 // chooseFastDownload only admits slower links once the leading measured link
 // is busy and an alternative has enough headroom to help.
-func chooseFastDownload(pool []*Slot, family Family) *Slot {
+func chooseFastDownload(pool []*Slot, family Family, now time.Time, explore bool) *Slot {
 	const busyFraction = 0.85
 	const minimumUsefulRate = 0.5 * bytesPerMbit
 
@@ -139,6 +155,26 @@ func chooseFastDownload(pool []*Slot, family Family) *Slot {
 		return nil // smart scheduling while links are still being measured
 	}
 
+	// Even a lightly loaded known link must not starve an unmeasured or
+	// stale alternative forever. Only a small share of new flows explores.
+	if explore {
+		var candidate *Slot
+		for _, link := range pool {
+			if link == fastest || link.busy(family) != 0 || link.fastPicks[family] != 0 {
+				continue
+			}
+			d := link.capacity[family][0]
+			stale := !d.lastMeasured.IsZero() && now.Sub(d.lastMeasured) >= 2*time.Minute
+			if d.estimate == 0 || stale {
+				if candidate == nil || link.total.Load() < candidate.total.Load() {
+					candidate = link
+				}
+			}
+		}
+		if candidate != nil {
+			return candidate
+		}
+	}
 	primaryLoad := fastest.downloadLoad()
 	if primaryLoad < busyFraction*peak {
 		return fastest

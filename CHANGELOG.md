@@ -5,6 +5,12 @@ entry here before pushing a version tag.
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-11-25
+
+- Avoid locking download mode to the first measured link and avoid treating short or slow transfers as sustained capacity changes.
+- Improve Game mode scoring and recover faster when the old path is clearly worse.
+- Re-evaluate TCP failover paths sooner after transient errors.
+
 ## [1.2.3] - 2026-11-24
 
 - Refresh existing desktop shortcuts on upgrade and point Windows shortcuts at a versioned icon file.

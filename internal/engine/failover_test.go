@@ -52,3 +52,21 @@ func TestTCPFailoverPinScopedExpiresAndNotifies(t *testing.T) {
 	now = now.Add(destinationPinTTL)
 	check(target, a)
 }
+
+func TestTCPFailoverRechecksBeforeExtendingPin(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("primary", "127.0.0.2", 3), nic("secondary", "127.0.0.3", 1)})
+	a, b := s.slots[0], s.slots[1]
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	target := newTCPEndpoint("203.0.113.1", 443)
+	s.rememberTCP(target, Fam4, []*Slot{a}, b, b.ip(Fam4))
+	now = now.Add(destinationPinTTL)
+	if got := s.acquireRoute(Fam4, nil, false, netip.Addr{}, target); got != a {
+		t.Fatal("expired preference prevented retesting the primary")
+	}
+	s.Release(a)
+	s.rememberTCP(target, Fam4, []*Slot{a}, b, b.ip(Fam4))
+	if pin := s.tcpPins[target]; !pin.expires.Equal(now.Add(destinationRepeatTTL)) {
+		t.Fatal("recently confirmed repeated failure did not extend the preference")
+	}
+}

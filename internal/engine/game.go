@@ -18,6 +18,7 @@ type linkQuality struct {
 	last              time.Duration
 	lastOK            bool
 	failStreak        int
+	target            int
 }
 
 func (q *linkQuality) update(rtt time.Duration, ok bool) {
@@ -44,7 +45,11 @@ func (q linkQuality) score() float64 {
 	if !q.sampled {
 		return math.Inf(1)
 	}
-	return float64(q.rtt+2*q.jitter) + q.failure*float64(500*time.Millisecond)
+	rtt := q.rtt
+	if q.lastOK {
+		rtt = max(rtt, (rtt+q.last)/2)
+	}
+	return float64(rtt+2*q.jitter) + q.failure*float64(500*time.Millisecond)
 }
 
 // IsLatencySensitiveUDP treats native UDP traffic like games and calls as

@@ -107,3 +107,36 @@ func TestGamePrefersComparableDestinationThenFallsBack(t *testing.T) {
 	}
 	s.Release(a)
 }
+
+func TestGameSwitchesOnClearRegressionWithoutWaitingForMoreFlows(t *testing.T) {
+	a, b := &Slot{key: "wifi"}, &Slot{key: "usb"}
+	pref := &routePreference{current: a.key, revision: 1}
+	score := func(sl *Slot) float64 {
+		if sl == a {
+			return float64(180 * time.Millisecond)
+		}
+		return float64(45 * time.Millisecond)
+	}
+	if got := chooseStable([]*Slot{a, b}, pref, 2, score); got != b {
+		t.Fatal("clear degradation left the stale route preferred")
+	}
+}
+
+func TestGameCanUseDestinationReplyDespitePublicProbeFailure(t *testing.T) {
+	s := NewScheduler([]nics.Nic{nic("wifi", "127.0.0.2", 1), nic("usb", "127.0.0.3", 1)})
+	public, direct := s.slots[0], s.slots[1]
+	s.SetDistribution("game")
+	s.SetState(public, Fam4, true)
+	s.SetState(direct, Fam4, false)
+	dst := netip.MustParseAddr("192.0.2.1")
+	now := s.now()
+	s.destinations = map[netip.Addr]*destinationRoute{dst: {updated: now, quality: map[string]destinationSample{
+		public.key: {ip: public.ip(Fam4), at: now, linkQuality: linkQuality{failStreak: 2}},
+		direct.key: {ip: direct.ip(Fam4), at: now, linkQuality: linkQuality{sampled: true, lastOK: true, rtt: 40 * time.Millisecond}},
+	}}}
+	got := s.acquireDestination(Fam4, nil, true, dst)
+	if got != direct || s.LatestGameRoute().Basis != "destination" {
+		t.Fatal("a fresh destination reply should beat repeated misses on the other link")
+	}
+	s.Release(got)
+}

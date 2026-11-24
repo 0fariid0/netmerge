@@ -158,6 +158,7 @@ type Scheduler struct {
 	auto               bool
 	roundRobin         bool
 	fastDownload       bool
+	downloadChoices    [2]uint64
 	destinations       map[netip.Addr]*destinationRoute
 	destinationBatches int
 	genericPreference  [2]routePreference
@@ -338,6 +339,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sec := dt.Seconds()
+	now := s.now()
 	for i, sl := range slots {
 		in, out, ok := samples[i].in, samples[i].out, samples[i].ok
 		if !sl.present || !ok {
@@ -378,7 +380,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 			sl.rateOut[f] = float64(out-sl.lastOut[f]) / sec
 			sl.lastIn[f], sl.lastOut[f] = in, out
 			// The directional estimates only use traffic observed on this link.
-			sl.sampleCapacity(f, sec)
+			sl.sampleCapacity(f, sec, now)
 			sl.fastPicks[f] = 0
 			r := sl.rateIn[f] + sl.rateOut[f]
 			if r >= minMeasuredPeak && r >= 0.05*sl.peak[f] {
@@ -429,7 +431,7 @@ func (s *Scheduler) Tick(dt time.Duration) {
 		}
 	}
 	for _, sl := range s.slots {
-		s.updateGameCaps(sl, s.now(), sec)
+		s.updateGameCaps(sl, now, sec)
 	}
 }
 
@@ -465,12 +467,21 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 		if _, no := skip[sl.key]; no {
 			continue
 		}
+		var recentDestinationOK bool
+		if s.game && latencySensitive {
+			if route := s.destinations[dst]; route != nil {
+				q := route.quality[sl.key]
+				recentDestinationOK = q.lastOK && q.ip.Equal(sl.ip(f)) && now.Sub(q.at) <= 10*time.Second
+			}
+		}
 		t := 1
 		switch {
-		case now.Before(sl.downUntil[f]) || sl.state[f] == stateDown:
+		case now.Before(sl.downUntil[f]):
 			t = 2
-		case sl.state[f] == stateUp:
+		case recentDestinationOK || sl.state[f] == stateUp:
 			t = 0
+		case sl.state[f] == stateDown:
+			t = 2
 		}
 		tiers[t] = append(tiers[t], sl)
 	}
@@ -487,9 +498,9 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 	var best *Slot
 	if endpoint.host != "" {
 		if pin, ok := s.tcpPins[endpoint]; ok {
-			if !now.Before(pin.expires) || !pin.link.present || !pin.source.Equal(pin.link.ip(f)) {
+			if now.Sub(pin.expires) >= destinationRepeatTTL || !pin.link.present || !pin.source.Equal(pin.link.ip(f)) {
 				delete(s.tcpPins, endpoint)
-			} else {
+			} else if now.Before(pin.expires) {
 				for _, sl := range pool {
 					if sl == pin.link {
 						best = sl
@@ -504,18 +515,20 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 		if r := s.destinations[dst]; r != nil && !r.updated.IsZero() && now.Sub(r.updated) <= 20*time.Second {
 			score := func(sl *Slot) float64 {
 				q := r.quality[sl.key]
-				if !q.ip.Equal(sl.ip(f)) || q.failStreak >= 2 {
+				if !q.ip.Equal(sl.ip(f)) || q.failStreak >= 2 || (!q.at.IsZero() && now.Sub(q.at) > 20*time.Second) {
 					return math.Inf(1)
 				}
 				return q.score()
 			}
-			comparable := 0
+			comparable, repeatedMisses := 0, 0
 			for _, sl := range pool {
 				if !math.IsInf(score(sl), 1) {
 					comparable++
+				} else if q := r.quality[sl.key]; q.ip.Equal(sl.ip(f)) && q.failStreak >= 2 && now.Sub(q.at) <= 20*time.Second {
+					repeatedMisses++
 				}
 			}
-			if comparable >= 2 {
+			if comparable >= 2 || (comparable == 1 && repeatedMisses > 0) {
 				best = chooseStable(pool, &r.preference, r.revision, score)
 				basis = "destination"
 			}
@@ -525,7 +538,11 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 			if len(skip) > 0 {
 				pref = &routePreference{}
 			}
-			best = chooseStable(pool, pref, s.probeRevision[f], func(sl *Slot) float64 { return sl.quality[f].score() })
+			best = chooseStable(pool, pref, s.probeRevision[f], func(sl *Slot) float64 {
+				quality := sl.quality[f]
+				// Public fallback is useful for connectivity but not directly comparable.
+				return quality.score() + float64(quality.target)*float64(20*time.Millisecond)
+			})
 		}
 		s.lastGameRoute = GameRoute{Adapter: best.Name, Basis: basis, Destination: dst, At: now}
 	} else if best == nil && s.roundRobin {
@@ -535,7 +552,10 @@ func (s *Scheduler) acquireRoute(f Family, skip map[string]struct{}, latencySens
 			s.next[f]++
 		}
 	} else if best == nil && s.fastDownload {
-		best = chooseFastDownload(pool, f)
+		if len(skip) == 0 {
+			s.downloadChoices[f]++
+		}
+		best = chooseFastDownload(pool, f, now, len(skip) == 0 && s.downloadChoices[f]%8 == 0)
 		if best != nil {
 			best.fastPicks[f]++
 		}

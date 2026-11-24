@@ -20,27 +20,27 @@ const (
 )
 
 func probe(sl *Slot, f Family) bool {
-	_, ok := measureProbe(sl, f, sl.ip(f))
+	_, _, ok := measureProbe(sl, f, sl.ip(f))
 	return ok
 }
 
-func measureProbe(sl *Slot, f Family, ip net.IP) (time.Duration, bool) {
+func measureProbe(sl *Slot, f Family, ip net.IP) (time.Duration, int, bool) {
 	if ip == nil {
-		return 0, false
+		return 0, -1, false
 	}
 	network := "tcp4"
 	if f == Fam6 {
 		network = "tcp6"
 	}
-	for _, t := range probeTargets[f] {
+	for i, t := range probeTargets[f] {
 		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: ip}, Control: nics.ForceEgress(sl.Index, f == Fam6), Timeout: probeTimeout}
 		start := time.Now()
 		if c, err := d.Dial(network, t); err == nil {
 			c.Close()
-			return max(time.Since(start), time.Microsecond), true
+			return max(time.Since(start), time.Microsecond), i, true
 		}
 	}
-	return 0, false
+	return 0, -1, false
 }
 
 type probeJob struct {
@@ -65,13 +65,20 @@ func (s *Scheduler) RunProbes(stop <-chan struct{}) {
 		for _, j := range s.probeDue() {
 			go func() {
 				defer j.sl.probing[j.f].Store(false)
-				rtt, ok := measureProbe(j.sl, j.f, j.ip)
+				rtt, target, ok := measureProbe(j.sl, j.f, j.ip)
 				s.mu.Lock()
 				defer s.mu.Unlock()
 				if !j.ip.Equal(j.sl.ip(j.f)) {
 					return
 				}
-				j.sl.quality[j.f].update(rtt, ok)
+				quality := &j.sl.quality[j.f]
+				if ok && quality.sampled && quality.target != target {
+					*quality = linkQuality{} // separate RTT baselines for different destinations
+				}
+				if ok {
+					quality.target = target
+				}
+				quality.update(rtt, ok)
 				s.probeRevision[j.f]++
 				j.sl.probeSequence[j.f]++
 				if ok {
